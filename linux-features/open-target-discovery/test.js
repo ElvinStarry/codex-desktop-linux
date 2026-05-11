@@ -235,6 +235,41 @@ test("open-target discovery finds IDEs from desktop entries", () => {
   });
 });
 
+test("open-target discovery uses desktop entry icons when available", () => {
+  withTempDir((tmp) => {
+    const dataHome = path.join(tmp, "share");
+    const appsDir = path.join(dataHome, "applications");
+    const iconDir = path.join(dataHome, "icons", "hicolor", "256x256", "apps");
+    const editorCommand = makeExecutable(path.join(tmp, "toolbox", "bin"), "workspace-agent");
+    const iconPath = path.join(iconDir, "workspace-agent.png");
+    fs.mkdirSync(appsDir, { recursive: true });
+    fs.mkdirSync(iconDir, { recursive: true });
+    fs.writeFileSync(iconPath, "png");
+    fs.writeFileSync(
+      path.join(appsDir, "workspace-agent.desktop"),
+      [
+        "[Desktop Entry]",
+        "Type=Application",
+        "Name=Workspace Agent",
+        `Exec=${editorCommand} %U`,
+        "Icon=workspace-agent",
+        "Categories=Development;",
+        "Comment=Coordinate coding agents across workspaces",
+      ].join("\n"),
+    );
+
+    const targets = evaluatePatched(
+      openTargetsBundle,
+      { HOME: tmp, PATH: path.join(tmp, "bin"), XDG_DATA_HOME: dataHome, XDG_DATA_DIRS: path.join(tmp, "empty") },
+      "Xg.flatMap((target)=>{let platform=target.platforms.linux;return platform?[{label:platform.label,iconPath:platform.iconPath?.()}]:[]})",
+    );
+    const agent = targets.find((target) => target.label === "Workspace Agent");
+
+    assert.ok(agent);
+    assert.equal(agent.iconPath, iconPath);
+  });
+});
+
 test("open-target discovery respects hidden desktop entry overrides", () => {
   withTempDir((tmp) => {
     const dataHome = path.join(tmp, "user-share");
