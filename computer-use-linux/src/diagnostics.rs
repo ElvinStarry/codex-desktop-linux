@@ -598,7 +598,7 @@ fn socket_connect_result(path: &Path) -> std::result::Result<(), String> {
     }
 
     match UnixStream::connect(path) {
-        Ok(_) => return Ok(()),
+        Ok(_) => Ok(()),
         Err(stream_error) => {
             match UnixDatagram::unbound().and_then(|socket| socket.connect(path)) {
                 Ok(()) => Ok(()),

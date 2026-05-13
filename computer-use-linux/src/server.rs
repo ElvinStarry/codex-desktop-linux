@@ -1923,9 +1923,7 @@ fn ydotool_socket_candidates() -> Vec<PathBuf> {
 }
 
 fn connectable_ydotool_socket_from(candidates: Vec<PathBuf>) -> Option<PathBuf> {
-    candidates
-        .into_iter()
-        .find(|path| ydotool_socket_connects(path))
+    candidates.into_iter().find(ydotool_socket_connects)
 }
 
 fn ydotool_socket_connects(path: &PathBuf) -> bool {
