@@ -49,6 +49,22 @@ bootstrap_modern_7zz_for_ci() {
     ' _ "$REPO_DIR/scripts/install-deps.sh"
 }
 
+has_modern_7zip_for_ci() {
+    if command -v 7zz >/dev/null 2>&1; then
+        7zz 2>&1 | grep -qm 1 "7-Zip"
+        return $?
+    fi
+
+    if command -v 7z >/dev/null 2>&1; then
+        local seven_zip_banner
+        seven_zip_banner="$(7z 2>&1 | head -n 3 || true)"
+        [[ "$seven_zip_banner" == *"7-Zip"* && "$seven_zip_banner" != *"16.02"* && "$seven_zip_banner" != *"p7zip Version"* ]]
+        return $?
+    fi
+
+    return 1
+}
+
 prepare_apt_ci() {
     apt_install \
         bash \
@@ -96,10 +112,10 @@ prepare_fedora_ci() {
         unzip \
         which \
         xz
-    if ! command -v 7zz >/dev/null 2>&1 && ! command -v 7z >/dev/null 2>&1; then
+    if ! has_modern_7zip_for_ci; then
         dnf install -y 7zip || dnf install -y p7zip p7zip-plugins || true
     fi
-    if ! command -v 7zz >/dev/null 2>&1 && ! command -v 7z >/dev/null 2>&1; then
+    if ! has_modern_7zip_for_ci; then
         bootstrap_modern_7zz_for_ci
     fi
     dnf clean all
@@ -120,6 +136,9 @@ prepare_arch_ci() {
         unzip \
         xz \
         zstd
+    if ! has_modern_7zip_for_ci; then
+        bootstrap_modern_7zz_for_ci
+    fi
 }
 
 ensure_ci_user() {

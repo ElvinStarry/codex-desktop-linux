@@ -1862,6 +1862,7 @@ test_fedora_dependency_bootstrap_installs_rpmbuild() {
     assert_contains "$helper" "sudo dnf install nodejs npm python3 p7zip p7zip-plugins curl unzip rpm-build make gcc-c++"
     assert_contains "$readme" "sudo dnf install python3 7zip curl unzip rpm-build make gcc-c++ @development-tools"
     assert_contains "$readme" "sudo dnf install python3 p7zip p7zip-plugins curl unzip rpm-build make gcc-c++"
+    assert_contains "$ci_entrypoint" "has_modern_7zip_for_ci"
     assert_contains "$ci_entrypoint" "dnf install -y 7zip || dnf install -y p7zip p7zip-plugins || true"
     assert_contains "$ci_entrypoint" "bootstrap_modern_7zz_for_ci"
 }
