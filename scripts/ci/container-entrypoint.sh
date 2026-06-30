@@ -42,7 +42,7 @@ apt_install() {
 
 bootstrap_modern_7zz_for_ci() {
     info "Bootstrapping modern 7zz for CI"
-    HOME="${HOME:-/root}" SEVENZIP_SYSTEM_INSTALL=1 bash -c '
+    HOME="${HOME:-/root}" CODEX_INSTALL_DEPS_SOURCE_ONLY=1 SEVENZIP_SYSTEM_INSTALL=1 bash -c '
         set -Eeuo pipefail
         source "$1"
         bootstrap_7zz

@@ -479,6 +479,10 @@ OS_RELEASE_ID_LIKE="$(os_release_field ID_LIKE 2>/dev/null || true)"
 OS_RELEASE_VERSION_ID="$(os_release_field VERSION_ID 2>/dev/null || true)"
 DISTRO="$(detect_distro)"
 
+if [ "${CODEX_INSTALL_DEPS_SOURCE_ONLY:-0}" = "1" ]; then
+    return 0 2>/dev/null || exit 0
+fi
+
 if [ "${DETECT_ONLY:-0}" = "1" ]; then
     info "Detected dependency profile: $DISTRO"
     info "os-release: ID=${OS_RELEASE_ID:-unknown} ID_LIKE=${OS_RELEASE_ID_LIKE:-unknown} VERSION_ID=${OS_RELEASE_VERSION_ID:-unknown}"
