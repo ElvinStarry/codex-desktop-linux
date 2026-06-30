@@ -224,6 +224,24 @@ package_target_dir() {
     printf '%s\n' "$target_dir"
 }
 
+prepare_real_app_build() {
+    rm -rf codex-app dist
+
+    local dmg_path="${CI_DMG_PATH:-${UPSTREAM_DMG_PATH:-/tmp/codex-upstream-ci/Codex.dmg}}"
+    mkdir -p "$(dirname "$dmg_path")"
+
+    if [ ! -s "$dmg_path" ]; then
+        info "Downloading upstream DMG"
+        curl -fL --retry 3 -o "$dmg_path" "$UPSTREAM_DMG_URL"
+    else
+        info "Using cached upstream DMG: $dmg_path"
+    fi
+
+    capture_upstream_metadata "$dmg_path"
+    CODEX_PATCH_REPORT_JSON="$REPO_DIR/patch-report.json" make build-app DMG="$dmg_path"
+    node scripts/ci/validate-patch-report.js patch-report.json --profile upstream-build
+}
+
 run_core_job() {
     enter_workspace
     ensure_rust_toolchain
@@ -504,18 +522,89 @@ run_upstream_job() {
     enter_workspace
     ensure_rust_toolchain
 
-    local dmg_path="${CI_DMG_PATH:-${UPSTREAM_DMG_PATH:-/tmp/codex-upstream-ci/Codex.dmg}}"
-    mkdir -p "$(dirname "$dmg_path")"
+    prepare_real_app_build
+}
 
-    if [ ! -s "$dmg_path" ]; then
-        info "Downloading upstream DMG"
-        curl -fL --retry 3 -o "$dmg_path" "$UPSTREAM_DMG_URL"
-    else
-        info "Using cached upstream DMG: $dmg_path"
-    fi
+run_upstream_deb_job() {
+    enter_workspace
+    ensure_rust_toolchain
+    prepare_real_app_build
 
-    capture_upstream_metadata "$dmg_path"
-    make build-app DMG="$dmg_path"
+    local target_dir
+    target_dir="$(package_target_dir)"
+    CARGO_TARGET_DIR="$target_dir" \
+    UPDATER_BINARY_SOURCE="$target_dir/release/codex-update-manager" \
+    PACKAGE_VERSION="$CI_PACKAGE_VERSION" \
+        ./scripts/build-deb.sh
+
+    local deb_file
+    deb_file="$(package_file_or_fail 'codex-desktop_*.deb')"
+    dpkg-deb -I "$deb_file"
+    dpkg-deb -c "$deb_file" | tee /tmp/upstream-deb-contents.txt >/dev/null
+    assert_contains_file /tmp/upstream-deb-contents.txt './usr/bin/codex-update-manager'
+    assert_contains_file /tmp/upstream-deb-contents.txt './usr/lib/systemd/user/codex-update-manager.service'
+    assert_contains_file /tmp/upstream-deb-contents.txt './opt/codex-desktop/update-builder/install.sh'
+    assert_contains_file /tmp/upstream-deb-contents.txt './opt/codex-desktop/.codex-linux/codex-packaged-runtime.sh'
+
+    append_summary "Upstream Debian Package Validation" \
+        "Built app from upstream DMG and packaged: \`$(basename "$deb_file")\`" \
+        "Validated required upstream patches from \`patch-report.json\`." \
+        "Verified updater binary, user service, update-builder bundle, and packaged runtime helper."
+}
+
+run_upstream_rpm_job() {
+    enter_workspace
+    ensure_rust_toolchain
+    prepare_real_app_build
+
+    local target_dir
+    target_dir="$(package_target_dir)"
+    CARGO_TARGET_DIR="$target_dir" \
+    UPDATER_BINARY_SOURCE="$target_dir/release/codex-update-manager" \
+    PACKAGE_VERSION="$CI_PACKAGE_VERSION" \
+        ./scripts/build-rpm.sh
+
+    local rpm_file
+    rpm_file="$(package_file_or_fail 'codex-desktop-*.rpm')"
+    rpm -qip "$rpm_file"
+    rpm -qlp "$rpm_file" | tee /tmp/upstream-rpm-contents.txt >/dev/null
+    assert_contains_file /tmp/upstream-rpm-contents.txt '/usr/bin/codex-update-manager'
+    assert_contains_file /tmp/upstream-rpm-contents.txt '/usr/lib/systemd/user/codex-update-manager.service'
+    assert_contains_file /tmp/upstream-rpm-contents.txt '/opt/codex-desktop/update-builder/install.sh'
+    assert_contains_file /tmp/upstream-rpm-contents.txt '/opt/codex-desktop/.codex-linux/codex-packaged-runtime.sh'
+
+    append_summary "Upstream RPM Package Validation" \
+        "Built app from upstream DMG and packaged: \`$(basename "$rpm_file")\`" \
+        "Validated required upstream patches from \`patch-report.json\`." \
+        "Verified updater binary, user service, update-builder bundle, and packaged runtime helper."
+}
+
+run_upstream_pacman_job() {
+    enter_workspace
+    ensure_rust_toolchain
+    prepare_real_app_build
+
+    local target_dir
+    target_dir="$(package_target_dir)"
+    CARGO_TARGET_DIR="$target_dir" cargo build --release -p codex-update-manager
+    CARGO_TARGET_DIR="$target_dir" \
+    UPDATER_BINARY_SOURCE="$target_dir/release/codex-update-manager" \
+    PACKAGE_VERSION="$CI_PACKAGE_VERSION" \
+        ./scripts/build-pacman.sh
+
+    local pkg_file
+    pkg_file="$(package_file_or_fail 'codex-desktop-*.pkg.tar.*')"
+    pacman -Qip "$pkg_file"
+    pacman -Qlp "$pkg_file" | tee /tmp/upstream-pacman-contents.txt >/dev/null
+    assert_contains_file /tmp/upstream-pacman-contents.txt 'usr/bin/codex-update-manager'
+    assert_contains_file /tmp/upstream-pacman-contents.txt 'usr/lib/systemd/user/codex-update-manager.service'
+    assert_contains_file /tmp/upstream-pacman-contents.txt 'opt/codex-desktop/update-builder/install.sh'
+    assert_contains_file /tmp/upstream-pacman-contents.txt 'opt/codex-desktop/.codex-linux/codex-packaged-runtime.sh'
+
+    append_summary "Upstream Pacman Package Validation" \
+        "Built app from upstream DMG and packaged: \`$(basename "$pkg_file")\`" \
+        "Validated required upstream patches from \`patch-report.json\`." \
+        "Verified updater binary, user service, update-builder bundle, and packaged runtime helper."
 }
 
 run_nix_job_as_root() {
@@ -538,6 +627,9 @@ run_job_as_current_user() {
         rpm) run_rpm_job ;;
         pacman) run_pacman_job ;;
         upstream) run_upstream_job ;;
+        upstream-deb) run_upstream_deb_job ;;
+        upstream-rpm) run_upstream_rpm_job ;;
+        upstream-pacman) run_upstream_pacman_job ;;
         *) error "Unsupported user-phase job: $CI_JOB" ;;
     esac
 }
@@ -552,17 +644,17 @@ if [ "${CI_CONTAINER_PHASE:-root}" = "job" ]; then
 fi
 
 case "$CI_JOB" in
-    core|deb|upstream)
+    core|deb|upstream|upstream-deb)
         prepare_apt_ci
         ensure_ci_user
         run_as_ci_user
         ;;
-    rpm)
+    rpm|upstream-rpm)
         prepare_fedora_ci
         ensure_ci_user
         run_as_ci_user
         ;;
-    pacman)
+    pacman|upstream-pacman)
         prepare_arch_ci
         ensure_ci_user
         run_as_ci_user

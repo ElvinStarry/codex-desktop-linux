@@ -26,6 +26,10 @@ Targets:
   deb                        Build and inspect the Debian package
   rpm                        Build and inspect the RPM package
   pacman                     Build and inspect the pacman package
+  upstream-packages          Build real upstream codex-app and package deb, rpm, pacman
+  upstream-deb               Build Debian package from a real upstream DMG app build
+  upstream-rpm               Build RPM package from a real upstream DMG app build
+  upstream-pacman            Build pacman package from a real upstream DMG app build
   install-deps               Test install-deps on Ubuntu 22.04, Ubuntu 24.04, and Debian 12
   install-deps:ubuntu-22.04  Test install-deps on one apt image
   install-deps:ubuntu-24.04  Test install-deps on one apt image
@@ -87,8 +91,11 @@ image_for_key() {
 image_key_for_job() {
     case "$1" in
         core|deb|upstream) echo "ubuntu-24.04" ;;
+        upstream-deb) echo "ubuntu-24.04" ;;
         rpm) echo "fedora-42" ;;
+        upstream-rpm) echo "fedora-42" ;;
         pacman) echo "archlinux-base-devel" ;;
+        upstream-pacman) echo "archlinux-base-devel" ;;
         nix) echo "nix" ;;
         *) error "No default image for job: $1" ;;
     esac
@@ -158,9 +165,11 @@ run_container_job() {
     fi
 
     mount_github_summary_args args
-    if [ "$job" = "upstream" ]; then
+    case "$job" in
+        upstream|upstream-deb|upstream-rpm|upstream-pacman)
         mount_upstream_args args
-    fi
+            ;;
+    esac
 
     info "Running $job in $image_key"
     "$engine" "${args[@]}" "$image" bash /work/scripts/ci/container-entrypoint.sh "$job"
@@ -185,7 +194,12 @@ run_target() {
             run_target nix
             run_target upstream
             ;;
-        core|deb|rpm|pacman|nix|upstream)
+        upstream-packages)
+            run_target upstream-deb
+            run_target upstream-rpm
+            run_target upstream-pacman
+            ;;
+        core|deb|rpm|pacman|nix|upstream|upstream-deb|upstream-rpm|upstream-pacman)
             run_container_job "$target" "$(image_key_for_job "$target")"
             ;;
         install-deps)
