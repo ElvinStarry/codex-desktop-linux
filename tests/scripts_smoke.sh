@@ -1845,6 +1845,7 @@ test_fedora_dependency_bootstrap_installs_rpmbuild() {
     local install_deps="$REPO_DIR/scripts/install-deps.sh"
     local helper="$REPO_DIR/scripts/lib/install-helpers.sh"
     local readme="$REPO_DIR/README.md"
+    local ci_entrypoint="$REPO_DIR/scripts/ci/container-entrypoint.sh"
 
     awk '/^install_dnf5\(\) \{/,/^}/' "$install_deps" | grep -q -- "rpm-build" \
         || fail "install_dnf5 must install rpm-build for rpmbuild"
@@ -1861,6 +1862,8 @@ test_fedora_dependency_bootstrap_installs_rpmbuild() {
     assert_contains "$helper" "sudo dnf install nodejs npm python3 p7zip p7zip-plugins curl unzip rpm-build make gcc-c++"
     assert_contains "$readme" "sudo dnf install python3 7zip curl unzip rpm-build make gcc-c++ @development-tools"
     assert_contains "$readme" "sudo dnf install python3 p7zip p7zip-plugins curl unzip rpm-build make gcc-c++"
+    assert_contains "$ci_entrypoint" "dnf install -y 7zip || dnf install -y p7zip p7zip-plugins || true"
+    assert_contains "$ci_entrypoint" "bootstrap_modern_7zz_for_ci"
 }
 
 test_setup_native_wizard_noninteractive_feature_writer() {

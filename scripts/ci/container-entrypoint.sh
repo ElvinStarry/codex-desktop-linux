@@ -40,6 +40,15 @@ apt_install() {
     rm -rf /var/lib/apt/lists/*
 }
 
+bootstrap_modern_7zz_for_ci() {
+    info "Bootstrapping modern 7zz for CI"
+    HOME="${HOME:-/root}" SEVENZIP_SYSTEM_INSTALL=1 bash -c '
+        set -Eeuo pipefail
+        source "$1"
+        bootstrap_7zz
+    ' _ "$REPO_DIR/scripts/install-deps.sh"
+}
+
 prepare_apt_ci() {
     apt_install \
         bash \
@@ -71,7 +80,6 @@ prepare_fedora_ci() {
         ca-certificates \
         curl \
         findutils \
-        7zip \
         gcc \
         gcc-c++ \
         git \
@@ -88,6 +96,12 @@ prepare_fedora_ci() {
         unzip \
         which \
         xz
+    if ! command -v 7zz >/dev/null 2>&1 && ! command -v 7z >/dev/null 2>&1; then
+        dnf install -y 7zip || dnf install -y p7zip p7zip-plugins || true
+    fi
+    if ! command -v 7zz >/dev/null 2>&1 && ! command -v 7z >/dev/null 2>&1; then
+        bootstrap_modern_7zz_for_ci
+    fi
     dnf clean all
 }
 
