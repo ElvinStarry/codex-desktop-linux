@@ -104,7 +104,13 @@ jobs:
             echo "- Built: \`$(basename "$deb_file")\`"
             echo "- Verified updater binary, user service, update-builder bundle, and packaged runtime helper."
           } >> "$GITHUB_STEP_SUMMARY"
-
+      - name: Upload Debian package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-desktop-deb
+          path: dist/*.deb
+          if-no-files-found: error
+          retention-days: 14
   nix:
     name: Nix Package Builds
     runs-on: ubuntu-latest
@@ -272,7 +278,13 @@ jobs:
             echo "- Built: \`$(basename "$rpm_file")\`"
             echo "- Verified updater binary, user service, update-builder bundle, and packaged runtime helper."
           } >> "$GITHUB_STEP_SUMMARY"
-
+      - name: Upload RPM package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-desktop-rpm
+          path: dist/*.rpm
+          if-no-files-found: error
+          retention-days: 14
   package-pacman:
     name: Build Pacman Package
     runs-on: ubuntu-latest
@@ -324,3 +336,10 @@ jobs:
             echo "- Built: \`$pkg_file\`"
             echo "- Verified updater binary, user service, update-builder bundle, and packaged runtime helper."
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload Pacman package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-desktop-pacman
+          path: dist/*.pkg.tar.*
+          if-no-files-found: error
+          retention-days: 14
