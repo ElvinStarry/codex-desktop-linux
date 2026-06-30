@@ -200,17 +200,6 @@ configure_multi_launch_instance() {
 configure_multi_launch_instance "$@"
 WEBVIEW_ORIGIN="http://127.0.0.1:$CODEX_LINUX_WEBVIEW_PORT"
 
-mkdir -p "$LOG_DIR" "$APP_CONFIG_DIR" "$APP_STATE_DIR" "$LAUNCH_ACTION_RUNTIME_DIR"
-chmod 700 "$LAUNCH_ACTION_RUNTIME_DIR" 2>/dev/null || true
-export CODEX_DESKTOP_LAUNCH_ACTION_SOCKET="$LAUNCH_ACTION_SOCKET"
-STARTED_WEBVIEW_PID=""
-ADOPTED_WEBVIEW_PID=""
-ELECTRON_PID=""
-RUNNING_APP_PID=""
-WARM_START=0
-LAUNCHER_LOCK_FD_OPEN=0
-LAUNCHER_LOCK_TIMED_OUT=0
-
 if [[ "${LAUNCHER_ARGS[0]:-}" == "--help" || "${LAUNCHER_ARGS[0]:-}" == "-h" ]]; then
     cat <<HELP
 Usage: ./start.sh [OPTIONS] [-- ELECTRON_FLAGS...]
@@ -252,6 +241,17 @@ Logs: $LOG_FILE
 HELP
     exit 0
 fi
+
+mkdir -p "$LOG_DIR" "$APP_CONFIG_DIR" "$APP_STATE_DIR" "$LAUNCH_ACTION_RUNTIME_DIR"
+chmod 700 "$LAUNCH_ACTION_RUNTIME_DIR" 2>/dev/null || true
+export CODEX_DESKTOP_LAUNCH_ACTION_SOCKET="$LAUNCH_ACTION_SOCKET"
+STARTED_WEBVIEW_PID=""
+ADOPTED_WEBVIEW_PID=""
+ELECTRON_PID=""
+RUNNING_APP_PID=""
+WARM_START=0
+LAUNCHER_LOCK_FD_OPEN=0
+LAUNCHER_LOCK_TIMED_OUT=0
 
 # Capture interactivity before stdout/stderr are redirected into the log;
 # [ -t 1 ] is always false after the exec below.

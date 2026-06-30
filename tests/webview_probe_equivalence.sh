@@ -34,6 +34,7 @@ MAIN_BASHPID="${BASHPID:-$$}"
 
 info() { echo "[probe-eq] $*" >&2; }
 fail() { echo "[probe-eq][FAIL] $*" >&2; exit 1; }
+skip() { echo "[probe-eq][SKIP] $*" >&2; exit 77; }
 
 [ -r "$TEMPLATE" ] || fail "cannot read $TEMPLATE"
 command -v python3 >/dev/null 2>&1 || fail "python3 is required to run the reference impl"
@@ -196,8 +197,19 @@ PY
     return 1
 }
 
+can_bind_loopback_port() {
+    python3 - <<'PY' >/dev/null 2>&1
+import socket
+
+with socket.socket() as s:
+    s.bind(("127.0.0.1", 0))
+PY
+}
+
 # ─── Fixture server ────────────────────────────────────────────────────────
 setup_server() {
+    can_bind_loopback_port || skip "sandbox denied binding a localhost test socket"
+
     FIXTURES=$(mktemp -d) || fail "mktemp -d failed"
     cat >"$FIXTURES/index.html" <<'EOF'
 <!doctype html>

@@ -71,6 +71,7 @@ prepare_fedora_ci() {
         ca-certificates \
         curl \
         findutils \
+        7zip \
         gcc \
         gcc-c++ \
         git \
@@ -98,6 +99,7 @@ prepare_arch_ci() {
         git \
         nodejs \
         npm \
+        p7zip \
         python \
         rustup \
         sudo \

@@ -3739,8 +3739,11 @@ EOF
     assert_contains "$REPO_DIR/scripts/lib/node-runtime.sh" "MANAGED_NODE_VERSION"
     assert_contains "$REPO_DIR/scripts/lib/package-common.sh" "node-runtime"
     assert_contains "$REPO_DIR/tests/fixtures/create-packaged-app-fixture.sh" "resources/node-runtime/bin"
-    assert_contains "$REPO_DIR/.github/workflows/ci.yml" "tests/fixtures/create-packaged-app-fixture.sh codex-app"
+    assert_contains "$REPO_DIR/.github/workflows/ci.yml" "./scripts/ci-local.sh upstream-deb"
+    assert_contains "$REPO_DIR/.github/workflows/ci.yml" "./scripts/ci-local.sh upstream-rpm"
+    assert_contains "$REPO_DIR/.github/workflows/ci.yml" "./scripts/ci-local.sh upstream-pacman"
     assert_contains "$REPO_DIR/.github/workflows/ci.yml" "for file in scripts/patches/"
+    assert_contains "$REPO_DIR/scripts/ci/container-entrypoint.sh" "tests/fixtures/create-packaged-app-fixture.sh codex-app"
     assert_contains "$REPO_DIR/scripts/ci/container-entrypoint.sh" "for file in scripts/patches/"
     assert_contains "$REPO_DIR/flake.nix" "rewriteCratesIoDownloadUrl"
     assert_contains "$REPO_DIR/flake.nix" "https://static.crates.io/crates/"
@@ -5661,7 +5664,16 @@ test_webview_probe_equivalence() {
     # python3 reference implementation across every input class (open/closed
     # port, marker-OK, 404, wrong title, missing loader, dead port) plus
     # confirms the watchdog cap still fires within its 150-500 ms window.
-    bash "$REPO_DIR/tests/webview_probe_equivalence.sh" \
+    local status=0
+    set +e
+    bash "$REPO_DIR/tests/webview_probe_equivalence.sh"
+    status=$?
+    set -e
+    if [ "$status" -eq 77 ]; then
+        info "Skipping webview probe equivalence in a sandbox that denies localhost bind"
+        return 0
+    fi
+    [ "$status" -eq 0 ] \
         || fail "webview probe equivalence harness reported a verdict mismatch or unbounded watchdog"
 }
 
