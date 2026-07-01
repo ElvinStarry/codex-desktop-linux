@@ -194,6 +194,9 @@ run_as_ci_user() {
         "RUSTUP_HOME=$CI_RUSTUP_HOME"
         "npm_config_cache=$CI_NPM_CACHE"
         "CARGO_TERM_COLOR=${CARGO_TERM_COLOR:-always}"
+        "CODEX_LINUX_ENABLE_COMPUTER_USE_UI=${CODEX_LINUX_ENABLE_COMPUTER_USE_UI:-}"
+        "CODEX_LINUX_FEATURES_CONFIG=${CODEX_LINUX_FEATURES_CONFIG:-}"
+        "CODEX_LINUX_SETTINGS_FILE=${CODEX_LINUX_SETTINGS_FILE:-}"
         "PATH=$CI_CARGO_HOME/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
         bash
         "$script_path"

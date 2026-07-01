@@ -157,6 +157,16 @@ run_container_job() {
         -w /work
     )
 
+    if [ -n "${CODEX_LINUX_ENABLE_COMPUTER_USE_UI:-}" ]; then
+        args+=(-e "CODEX_LINUX_ENABLE_COMPUTER_USE_UI=$CODEX_LINUX_ENABLE_COMPUTER_USE_UI")
+    fi
+    if [ -n "${CODEX_LINUX_FEATURES_CONFIG:-}" ]; then
+        args+=(-e "CODEX_LINUX_FEATURES_CONFIG=$CODEX_LINUX_FEATURES_CONFIG")
+    fi
+    if [ -n "${CODEX_LINUX_SETTINGS_FILE:-}" ]; then
+        args+=(-e "CODEX_LINUX_SETTINGS_FILE=$CODEX_LINUX_SETTINGS_FILE")
+    fi
+
     if [ -n "${CI_DMG_PATH:-}" ]; then
         args+=(-e "CI_DMG_PATH=$CI_DMG_PATH")
     fi

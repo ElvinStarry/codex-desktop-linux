@@ -64,19 +64,39 @@ jobs:
         run: |
           set -euo pipefail
           bash tests/scripts_smoke.sh
+
+      - name: Write Rust and Smoke summary
+        run: |
           {
             echo "## Rust and Smoke Tests"
             echo ""
             echo "- Shell syntax checks passed."
-            echo "- Rust formatting, clippy, check, and tests passed."
+            echo "- Rust formatting, clippy, check, tests passed."
             echo "- Script smoke tests passed."
           } >> "$GITHUB_STEP_SUMMARY"
 
   package-deb:
     name: Build Debian Package From Upstream DMG
     runs-on: ubuntu-latest
+    env:
+      CODEX_LINUX_ENABLE_COMPUTER_USE_UI: "1"
     steps:
       - uses: actions/checkout@v4
+
+      - name: Write CI Linux feature config
+        run: |
+          set -euo pipefail
+          mkdir -p linux-features
+          cat > linux-features/features.json <<'EOF'
+          {
+            "enabled": [
+              "agent-workspace",
+              "appshots",
+              "open-target-discovery",
+              "api-key-service-tier"
+            ]
+          }
+          EOF
 
       - name: Build Debian package from real upstream app build
         run: ./scripts/ci-local.sh upstream-deb
@@ -88,6 +108,7 @@ jobs:
           path: dist/*.deb
           if-no-files-found: error
           retention-days: 14
+
       - name: Upload Debian upstream build metadata
         if: always()
         uses: actions/upload-artifact@v4
@@ -98,6 +119,7 @@ jobs:
             patch-report.json
           if-no-files-found: ignore
           retention-days: 14
+
   nix:
     name: Nix Package Builds
     runs-on: ubuntu-latest
@@ -168,13 +190,13 @@ jobs:
           set -e
           if [ "$validation_status" -ne 0 ]; then
             if [ "$GITHUB_EVENT_NAME" = "pull_request" ] \
-                && [ "$NIX_PIN_FILES_CHANGED" != "true" ] \
-                && grep -Eq "Codex app version pin mismatch|Electron version pin mismatch|native-modules .* pin mismatch" "$validation_log"; then
+              && [ "$NIX_PIN_FILES_CHANGED" != "true" ] \
+              && grep -Eq "Codex app version pin mismatch|Electron version pin mismatch|native-modules .* pin mismatch" "$validation_log"; then
               {
                 echo "## Nix Pin Validation"
                 echo ""
-                echo "- Skipped package-output builds because upstream \`Codex.dmg\` metadata is ahead of the committed flake pins during rollout."
-                echo "- This is PR-only; main-branch validation still fails so the scheduled hash-refresh workflow can open a full pin-refresh PR from the current upstream DMG."
+                echo "- Skipped package-output builds because upstream \`Codex.dmg\` metadata is ahead of committed flake pins during rollout."
+                echo "- This is PR-only; main-branch validation still fails so the scheduled hash-refresh workflow can open a full pin-refresh PR for the current upstream DMG."
               } >> "$GITHUB_STEP_SUMMARY"
               echo "skip_package_outputs=true" >> "$GITHUB_OUTPUT"
               rm -f "$validation_log"
@@ -205,15 +227,15 @@ jobs:
             build_log="$(mktemp)"
             if ! nix build "$output" --no-link --print-build-logs --max-jobs 1 2>&1 | tee "$build_log"; then
               if [ "$GITHUB_EVENT_NAME" = "pull_request" ] \
-                  && [ "$NIX_PIN_FILES_CHANGED" != "true" ] \
-                  && grep -q "hash mismatch in fixed-output derivation" "$build_log" \
-                  && grep -q "Codex.dmg.drv" "$build_log"; then
+                && [ "$NIX_PIN_FILES_CHANGED" != "true" ] \
+                && grep -q "hash mismatch in fixed-output derivation" "$build_log" \
+                && grep -q "Codex.dmg.drv" "$build_log"; then
                 {
                   echo "## Nix Package Builds"
                   echo ""
                   echo "- Skipped package-output builds after \`$output\` because upstream \`Codex.dmg\` is rolling between fixed-output hashes."
                   echo "- This does not mask non-DMG Nix failures; main-branch builds still fail on this condition."
-                  echo "- The scheduled hash-refresh workflow owns updating the committed DMG pin from the current upstream DMG."
+                  echo "- The scheduled hash-refresh workflow owns updating the committed DMG pin for the current upstream DMG."
                 } >> "$GITHUB_STEP_SUMMARY"
                 exit 0
               fi
@@ -229,8 +251,25 @@ jobs:
   package-rpm:
     name: Build RPM Package From Upstream DMG
     runs-on: ubuntu-latest
+    env:
+      CODEX_LINUX_ENABLE_COMPUTER_USE_UI: "1"
     steps:
       - uses: actions/checkout@v4
+
+      - name: Write CI Linux feature config
+        run: |
+          set -euo pipefail
+          mkdir -p linux-features
+          cat > linux-features/features.json <<'EOF'
+          {
+            "enabled": [
+              "agent-workspace",
+              "appshots",
+              "open-target-discovery",
+              "api-key-service-tier"
+            ]
+          }
+          EOF
 
       - name: Build RPM package from real upstream app build
         run: ./scripts/ci-local.sh upstream-rpm
@@ -242,6 +281,7 @@ jobs:
           path: dist/*.rpm
           if-no-files-found: error
           retention-days: 14
+
       - name: Upload RPM upstream build metadata
         if: always()
         uses: actions/upload-artifact@v4
@@ -252,11 +292,29 @@ jobs:
             patch-report.json
           if-no-files-found: ignore
           retention-days: 14
+
   package-pacman:
     name: Build Pacman Package From Upstream DMG
     runs-on: ubuntu-latest
+    env:
+      CODEX_LINUX_ENABLE_COMPUTER_USE_UI: "1"
     steps:
       - uses: actions/checkout@v4
+
+      - name: Write CI Linux feature config
+        run: |
+          set -euo pipefail
+          mkdir -p linux-features
+          cat > linux-features/features.json <<'EOF'
+          {
+            "enabled": [
+              "agent-workspace",
+              "appshots",
+              "open-target-discovery",
+              "api-key-service-tier"
+            ]
+          }
+          EOF
 
       - name: Build pacman package from real upstream app build
         run: ./scripts/ci-local.sh upstream-pacman
@@ -268,6 +326,7 @@ jobs:
           path: dist/*.pkg.tar.*
           if-no-files-found: error
           retention-days: 14
+
       - name: Upload Pacman upstream build metadata
         if: always()
         uses: actions/upload-artifact@v4
