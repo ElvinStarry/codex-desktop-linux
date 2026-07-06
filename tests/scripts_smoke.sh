@@ -4094,6 +4094,47 @@ EOF
     output="$(env -i PATH="$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=default CODEX_FORCE_DEVICE_SCALE_FACTOR=1 "$launcher_probe" probe -- --force-device-scale-factor=2)"
     [[ "$output" == *"electron=<--force-device-scale-factor=2>"* && "$output" != *"<--force-device-scale-factor=1>"* ]] || fail "explicit --force-device-scale-factor must win over the env override: $output"
 
+    # Feature launcher hooks run after set_electron_defaults() has already chosen
+    # the Ozone platform, so a hook-supplied explicit --ozone-platform must drop
+    # the launcher-computed value instead of leaving both in the final argv. This
+    # must hold no matter how the launcher picked the platform: CODEX_OZONE_PLATFORM,
+    # the CODEX_LINUX_RENDERING_MODE profile (wayland-gpu / wslg), or the Sommelier
+    # fallback.
+    local hook_force_x11_dir="$TMP_DIR/hook-force-x11"
+    mkdir -p "$hook_force_x11_dir"
+    printf '%s\n' '#!/usr/bin/env bash' "printf '%s\\n' 'electron-arg --ozone-platform=x11'" > "$hook_force_x11_dir/force-x11"
+    chmod +x "$hook_force_x11_dir/force-x11"
+    local hook_force_wayland_dir="$TMP_DIR/hook-force-wayland"
+    mkdir -p "$hook_force_wayland_dir"
+    printf '%s\n' '#!/usr/bin/env bash' "printf '%s\\n' 'electron-arg --ozone-platform=wayland'" > "$hook_force_wayland_dir/force-wayland"
+    chmod +x "$hook_force_wayland_dir/force-wayland"
+
+    output="$(env -i PATH="$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=default FEATURE_LAUNCHER_HOOK_DIR="$hook_force_x11_dir" CODEX_OZONE_PLATFORM=wayland "$launcher_probe" probe)"
+    [[ "$output" == *"electron=<--ozone-platform=x11>"* ]] || fail "launcher hook --ozone-platform must reach Electron over CODEX_OZONE_PLATFORM: $output"
+    [[ "$output" != *"<--ozone-platform=wayland>"* ]] || fail "env-derived --ozone-platform must be dropped when a launcher hook overrides it: $output"
+    [[ "$output" != *"WaylandWindowDecorations"* ]] || fail "cleared env Wayland platform must not still add Wayland decorations: $output"
+
+    output="$(env -i PATH="$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=wayland-gpu FEATURE_LAUNCHER_HOOK_DIR="$hook_force_x11_dir" "$launcher_probe" probe)"
+    [[ "$output" == *"electron=<--ozone-platform=x11>"* ]] || fail "launcher hook --ozone-platform must reach Electron under wayland-gpu: $output"
+    [[ "$output" != *"<--ozone-platform=wayland>"* ]] || fail "wayland-gpu launcher platform must be dropped when a hook overrides it: $output"
+    [[ "$output" != *"WaylandWindowDecorations"* ]] || fail "dropped wayland-gpu platform must not still add Wayland decorations: $output"
+
+    output="$(env -i PATH="$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=wslg FEATURE_LAUNCHER_HOOK_DIR="$hook_force_wayland_dir" "$launcher_probe" probe)"
+    [[ "$output" == *"<--ozone-platform=wayland>"* ]] || fail "launcher hook --ozone-platform must reach Electron under wslg: $output"
+    [[ "$output" != *"<--ozone-platform=x11>"* ]] || fail "wslg launcher platform must be dropped when a hook overrides it: $output"
+
+    output="$(env -i PATH="$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=default SOMMELIER_VERSION=1 FEATURE_LAUNCHER_HOOK_DIR="$hook_force_wayland_dir" "$launcher_probe" probe)"
+    [[ "$output" == *"<--ozone-platform=wayland>"* ]] || fail "launcher hook --ozone-platform must reach Electron over the Sommelier fallback: $output"
+    [[ "$output" != *"<--ozone-platform=x11>"* ]] || fail "Sommelier X11 fallback must be dropped when a hook overrides it: $output"
+
+    local hook_scale_dir="$TMP_DIR/hook-scale-override"
+    mkdir -p "$hook_scale_dir"
+    printf '%s\n' '#!/usr/bin/env bash' "printf '%s\\n' 'electron-arg --force-device-scale-factor=2'" > "$hook_scale_dir/force-scale2"
+    chmod +x "$hook_scale_dir/force-scale2"
+    output="$(env -i PATH="$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=default FEATURE_LAUNCHER_HOOK_DIR="$hook_scale_dir" CODEX_FORCE_DEVICE_SCALE_FACTOR=1 "$launcher_probe" probe)"
+    [[ "$output" == *"electron=<--force-device-scale-factor=2>"* ]] || fail "launcher hook --force-device-scale-factor must reach Electron over CODEX_FORCE_DEVICE_SCALE_FACTOR: $output"
+    [[ "$output" != *"<--force-device-scale-factor=1>"* ]] || fail "env-derived --force-device-scale-factor must be dropped when a launcher hook overrides it: $output"
+
     assert_contains "$REPO_DIR/launcher/start.sh.template" "warm_start_ipc_sent"
     assert_contains "$REPO_DIR/launcher/start.sh.template" "launcher_phase"
     assert_contains "$REPO_DIR/launcher/start.sh.template" 'date +%s%N'

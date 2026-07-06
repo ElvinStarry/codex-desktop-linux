@@ -2972,6 +2972,28 @@ run_feature_launcher_hooks() {
 build_electron_launch_args() {
     local enable_features_arg
 
+    # Feature launcher hooks (runtimeHooks.launcher) run after
+    # set_electron_defaults() has already chosen the Ozone platform and device
+    # scale factor -- whether from CODEX_OZONE_PLATFORM /
+    # CODEX_FORCE_DEVICE_SCALE_FACTOR, the CODEX_LINUX_RENDERING_MODE profile
+    # (wayland-gpu / wslg), or the Sommelier X11 fallback. If such a hook then
+    # emits an explicit --ozone-platform / --force-device-scale-factor, both the
+    # launcher-computed flag and the hook flag would land in the final Electron
+    # argv (and a launcher-selected Wayland platform would still add
+    # WaylandWindowDecorations below). Pass-through CLI args are scanned before
+    # those defaults are computed and already suppress them; hook args are
+    # scanned afterward, so drop the launcher-computed value here whenever any
+    # explicit override reached the Electron args, so the hook flag wins cleanly.
+    if [ -n "$ELECTRON_OZONE_PLATFORM" ] && [ "$ELECTRON_OZONE_SWITCH_IN_ARGS" -eq 1 ]; then
+        echo "Dropping launcher-selected --ozone-platform=$ELECTRON_OZONE_PLATFORM; an explicit --ozone-platform arg overrides it"
+        ELECTRON_OZONE_PLATFORM=""
+        ELECTRON_OZONE_HINT=""
+    fi
+    if [ -n "$ELECTRON_FORCED_SCALE_FACTOR" ] && [ "$ELECTRON_SCALE_SWITCH_IN_ARGS" -eq 1 ]; then
+        echo "Dropping launcher-selected --force-device-scale-factor=$ELECTRON_FORCED_SCALE_FACTOR; an explicit --force-device-scale-factor arg overrides it"
+        ELECTRON_FORCED_SCALE_FACTOR=""
+    fi
+
     ELECTRON_LAUNCH_ARGS=(
         --no-sandbox
         --class="$CODEX_LINUX_APP_ID"
