@@ -2066,6 +2066,13 @@ test_fedora_dependency_bootstrap_installs_rpmbuild() {
     assert_contains "$ci_entrypoint" 'CODEX_INSTALL_DEPS_SOURCE_ONLY=1'
     assert_contains "$ci_entrypoint" "dnf install -y 7zip || dnf install -y p7zip p7zip-plugins || true"
     assert_contains "$ci_entrypoint" "bootstrap_modern_7zz_for_ci"
+
+    CODEX_INSTALL_DEPS_SOURCE_ONLY=1 bash -c '
+        set -Eeuo pipefail
+        cd /
+        source "$1"
+        declare -F bootstrap_7zz >/dev/null
+    ' _ "$install_deps" || fail "install-deps source-only mode must resolve helpers relative to the sourced script"
 }
 
 test_fedora_atomic_rpm_ostree_target_detection() {
