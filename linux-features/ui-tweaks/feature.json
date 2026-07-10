@@ -12,6 +12,11 @@
         "enabled": true
       }
     },
+    "reasoning": {
+      "keepEffortLabelsEnglish": {
+        "enabled": true
+      }
+    },
     "sidebar": {
       "projectName": {
         "enabled": true,

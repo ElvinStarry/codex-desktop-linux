@@ -2,6 +2,7 @@
 
 const sidebarProjectName = require("./patches/sidebar-project-name.js");
 const modelPickerModelList = require("./patches/model-picker-model-list.js");
+const reasoningEffortLabels = require("./patches/reasoning-effort-labels.js");
 
 function patchesFrom(...modules) {
   return modules.flatMap((moduleExports) =>
@@ -10,5 +11,5 @@ function patchesFrom(...modules) {
 }
 
 module.exports = {
-  descriptors: patchesFrom(sidebarProjectName, modelPickerModelList),
+  descriptors: patchesFrom(sidebarProjectName, modelPickerModelList, reasoningEffortLabels),
 };

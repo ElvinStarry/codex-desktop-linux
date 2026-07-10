@@ -18,6 +18,7 @@ Enable it in the local, gitignored feature config:
 | Tweak | Patch module | What it does | Settings |
 | --- | --- | --- | --- |
 | `modelPicker.showModelsByDefault` | `patches/model-picker-model-list.js` | Opens the advanced picker by default and shows model choices inline instead of hiding them behind the compact Power slider and a nested Model submenu. | `tweaks.modelPicker.showModelsByDefault.enabled` |
+| `reasoning.keepEffortLabelsEnglish` | `patches/reasoning-effort-labels.js` | Keeps reasoning effort values in English in the Simplified Chinese UI while leaving the surrounding interface translated. | `tweaks.reasoning.keepEffortLabelsEnglish.enabled` |
 | `sidebar.projectName` | `patches/sidebar-project-name.js` | Styles project names in the left sidebar project list. It does not style `Projects` / `Chats` section headings and does not style chat rows. | `tweaks.sidebar.projectName.enabled`, `tweaks.sidebar.projectName.style` |
 
 ## Settings
@@ -58,6 +59,19 @@ Config keys:
 
 - `enabled`: `true` applies the tweak, `false` keeps the feature enabled but
   leaves the upstream model picker unchanged.
+
+### `reasoning.keepEffortLabelsEnglish`
+
+Leaves the reasoning effort values as `None`, `Minimal`, `Low`, `Medium`,
+`High`, `XHigh`, `Max`, and `Ultra` in the Simplified Chinese locale. The
+surrounding picker title and usage warning remain translated. This avoids
+collapsing distinct upstream values such as `XHigh` and `Ultra` into the same
+Chinese label.
+
+Config keys:
+
+- `enabled`: `true` applies the tweak, `false` keeps the feature enabled but
+  uses the upstream translated effort labels.
 
 ### `sidebar.projectName`
 

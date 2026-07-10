@@ -33,6 +33,11 @@ const {
   descriptors: patches,
   sidebarProjectNameCss,
 } = require("./patches/sidebar-project-name.js");
+const {
+  ENGLISH_REASONING_LABELS,
+  ZH_CN_LOCALE_ASSET_PATTERN,
+  applyEnglishReasoningLabels,
+} = require("./patches/reasoning-effort-labels.js");
 
 function projectBundleFixture() {
   return [
@@ -60,6 +65,22 @@ function modelPickerMenuBundleFixture() {
     "let we=(0,c6.jsxs)(c6.Fragment,{children:[ye,effort]});",
     "}",
   ].join("");
+}
+
+function simplifiedChineseLocaleFixture() {
+  const labels = {
+    "composer.mode.local.reasoning.none.label": "无",
+    "composer.mode.local.reasoning.minimal.label": "极低",
+    "composer.mode.local.reasoning.low.label": "轻度",
+    "composer.mode.local.reasoning.medium.label": "中",
+    "composer.mode.local.reasoning.high.label": "高",
+    "composer.mode.local.reasoning.xhigh.label": "极高",
+    "composer.mode.local.reasoning.max.label": "最高",
+    "composer.mode.local.reasoning.ultra.label": "极高",
+  };
+  return Object.entries(labels)
+    .map(([key, value]) => `"${key}":\`${value}\``)
+    .join(",");
 }
 
 function applyPatchTwice(source, context) {
@@ -111,6 +132,7 @@ test("ui-tweaks is discoverable and disabled until listed in features.json", () 
         ["feature:ui-tweaks:model-picker-default-advanced-view", "webview-asset", "optional"],
         ["feature:ui-tweaks:model-picker-include-gpt-5-6", "webview-asset", "optional"],
         ["feature:ui-tweaks:model-picker-inline-model-list", "webview-asset", "optional"],
+        ["feature:ui-tweaks:reasoning-effort-labels-english", "webview-asset", "optional"],
       ],
     );
   } finally {
@@ -155,6 +177,38 @@ test("model picker opens advanced view and renders model choices inline", () => 
   assert.equal(applyInlineModelListPatch(patchedMenu), patchedMenu);
 });
 
+test("GPT-5.6 allowlist behavior admits only visible GPT-5.6 models", () => {
+  const evaluateAvailability = ({ model, hidden, availableModels }) => {
+    const patchedExpression = applyGpt56AllowlistPatch(`return ${MODEL_ALLOWLIST_MARKER};`);
+    return Function("l", "t", "n", patchedExpression)(
+      true,
+      new Set(availableModels),
+      { model, hidden },
+    );
+  };
+
+  assert.equal(
+    evaluateAvailability({ model: "gpt-5.6-sol", hidden: false, availableModels: [] }),
+    true,
+  );
+  assert.equal(
+    evaluateAvailability({ model: "gpt-5.6-sol", hidden: true, availableModels: [] }),
+    false,
+  );
+  assert.equal(
+    evaluateAvailability({ model: "gpt-5.5-codex", hidden: false, availableModels: [] }),
+    false,
+  );
+  assert.equal(
+    evaluateAvailability({
+      model: "gpt-5.5-codex",
+      hidden: false,
+      availableModels: ["gpt-5.5-codex"],
+    }),
+    true,
+  );
+});
+
 test("model picker tweak can be disabled through feature settings", () => {
   const stateSource = modelPickerStateBundleFixture();
   const menuSource = modelPickerMenuBundleFixture();
@@ -186,6 +240,37 @@ test("model picker drift warns and leaves the asset unchanged", () => {
   assert.equal(value, source);
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], /^WARN: Could not find the persisted model picker view marker/);
+});
+
+test("reasoning effort labels stay in English in the Simplified Chinese locale", () => {
+  const source = simplifiedChineseLocaleFixture();
+  const patched = applyEnglishReasoningLabels(source);
+
+  for (const [key, label] of Object.entries(ENGLISH_REASONING_LABELS)) {
+    assert.match(patched, new RegExp(`"${key.replaceAll(".", "\\.")}":\\\`${label}\\\``));
+  }
+  assert.equal(applyEnglishReasoningLabels(patched), patched);
+  assert.match("zh-CN-BPHwMaw8.js", ZH_CN_LOCALE_ASSET_PATTERN);
+  assert.doesNotMatch("zh-TW-rBlCyjlT.js", ZH_CN_LOCALE_ASSET_PATTERN);
+});
+
+test("English reasoning effort labels can be disabled", () => {
+  const source = simplifiedChineseLocaleFixture();
+  const context = {
+    feature: {
+      settings: {
+        tweaks: {
+          reasoning: {
+            keepEffortLabelsEnglish: {
+              enabled: false,
+            },
+          },
+        },
+      },
+    },
+  };
+
+  assert.equal(applyEnglishReasoningLabels(source, context), source);
 });
 
 test("sidebar project descriptor targets only the current project sidebar asset", () => {
