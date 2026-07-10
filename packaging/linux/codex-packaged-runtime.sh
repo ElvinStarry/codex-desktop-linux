@@ -38,30 +38,6 @@ codex_packaged_runtime_prelaunch_background() {
             HYPRLAND_INSTANCE_SIGNATURE \
             YDOTOOL_SOCKET >/dev/null 2>&1 || true
     fi
-
-    if ! systemctl --user is-enabled codex-update-manager.service >/dev/null 2>&1; then
-        return 0
-    fi
-
-    systemctl --user start codex-update-manager.service >/dev/null 2>&1 || true
-    codex_packaged_runtime_trigger_update_check
-}
-
-codex_packaged_runtime_trigger_update_check() {
-    if ! command -v codex-update-manager >/dev/null 2>&1; then
-        return 0
-    fi
-
-    if command -v systemd-run >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
-        systemd-run --user \
-            --unit=codex-update-manager-launch-check \
-            --collect \
-            --quiet \
-            /usr/bin/codex-update-manager check-now --if-stale >/dev/null 2>&1 || true
-        return 0
-    fi
-
-    codex-update-manager check-now --if-stale >/dev/null 2>&1 || true
 }
 
 codex_packaged_runtime_export_env() {

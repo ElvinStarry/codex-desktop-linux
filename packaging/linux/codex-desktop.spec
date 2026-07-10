@@ -67,12 +67,10 @@ fi
 %if __PACKAGE_WITH_UPDATER__
 SERVICE_HELPER=/opt/__PACKAGE_NAME__/update-builder/packaging/linux/codex-update-manager-user-service.sh
 if [ -f "$SERVICE_HELPER" ]; then
-    . "$SERVICE_HELPER"
-    if [ "${1:-0}" -eq 1 ]; then
-        codex_ensure_user_service_running || true
-    else
-        codex_start_enabled_user_service || true
-    fi
+. "$SERVICE_HELPER"
+codex_reload_user_managers || true
+codex_cleanup_user_service stop || true
+codex_cleanup_user_service disable || true
 fi
 %else
 CLEANUP_HELPER=/opt/__PACKAGE_NAME__/.codex-linux/codex-no-updater-transition-cleanup.sh

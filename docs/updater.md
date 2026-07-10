@@ -1,12 +1,13 @@
 # Auto-Update Manager
 
-Default native packages install `codex-update-manager`, a companion
-`systemd --user` service.
+Default native packages install `codex-update-manager` for manual update
+checks. The companion `systemd --user` service is installed but disabled by
+default.
 
 It:
 
-- checks upstream `Codex.dmg` on daemon startup, every 6 hours, and in the
-  background on app launch when stale
+- checks upstream `Codex.dmg` when the user runs `check-now`, uses the in-app
+  Check for Updates action, or explicitly enables and starts the user service
 - rebuilds a local native package with `/opt/codex-desktop/update-builder`
 - waits for Electron to exit before installing a ready update
 - runs unprivileged; the final package install uses `pkexec` when a graphical
@@ -145,17 +146,17 @@ make service-status
 codex-update-manager status --json
 ```
 
-`make service-enable` is meant for installed packages, not repo-only generated
-apps.
+`make service-enable` is an explicit opt-in for installed packages, not
+repo-only generated apps.
 
-To temporarily pause automatic package rebuilds and installs while keeping Codex
-Desktop usable, disable the user service:
+Automatic package rebuilds are disabled by default. To keep them disabled or
+turn off a previously enabled service:
 
 ```bash
 systemctl --user disable --now codex-update-manager.service
 ```
 
-Launching Codex Desktop and upgrading the package will not re-enable a disabled
+Launching Codex Desktop or upgrading the package will stop and disable the
 updater service. Re-enable updater behavior explicitly when you want automatic
 checks again:
 
