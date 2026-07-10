@@ -1,13 +1,14 @@
 "use strict";
 
 const sidebarProjectName = require("./patches/sidebar-project-name.js");
+const reasoningEffortLabels = require("./patches/reasoning-effort-labels.js");
 
 function patchesFrom(...modules) {
   return modules.flatMap((moduleExports) =>
-    Array.isArray(moduleExports?.patches) ? moduleExports.patches : [],
+    Array.isArray(moduleExports?.descriptors) ? moduleExports.descriptors : [],
   );
 }
 
 module.exports = {
-  patches: patchesFrom(sidebarProjectName),
+  descriptors: patchesFrom(sidebarProjectName, reasoningEffortLabels),
 };

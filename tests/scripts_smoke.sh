@@ -178,6 +178,54 @@ test_extract_webview_replaces_linux_icon_assets() {
     assert_contains "$output_log" "Linux app icon applied to 2 webview asset(s)"
 }
 
+test_extract_webview_requires_entrypoint() {
+    info "Checking webview extraction rejects incomplete upstream assets"
+    local workspace="$TMP_DIR/webview-required-entrypoint"
+    local output_log="$workspace/output.log"
+
+    mkdir -p "$workspace/missing-dir/work/app-extracted" \
+        "$workspace/missing-dir/install" \
+        "$workspace/missing-index/work/app-extracted/webview/assets" \
+        "$workspace/missing-index/install"
+    printf '%s\n' 'asset' > "$workspace/missing-index/work/app-extracted/webview/assets/app-main.png"
+
+    set +e
+    (
+        SCRIPT_DIR="$REPO_DIR"
+        INSTALL_DIR="$workspace/missing-dir/install"
+        WORK_DIR="$workspace/missing-dir/work"
+        ICON_SOURCE="$workspace/icon.png"
+        CODEX_LINUX_ICON_SOURCE="$workspace/icon.png"
+        error() { echo "[ERROR] $*" >&2; exit 1; }
+        warn() { echo "[WARN] $*" >&2; }
+        # shellcheck disable=SC1091
+        source "$REPO_DIR/scripts/lib/webview-install.sh"
+        extract_webview "$workspace/Codex.app"
+    ) >"$output_log" 2>&1
+    local rc=$?
+    set -e
+    [ "$rc" -ne 0 ] || fail "extract_webview should fail when upstream webview directory is missing"
+    assert_contains "$output_log" "Webview directory not found"
+
+    set +e
+    (
+        SCRIPT_DIR="$REPO_DIR"
+        INSTALL_DIR="$workspace/missing-index/install"
+        WORK_DIR="$workspace/missing-index/work"
+        ICON_SOURCE="$workspace/icon.png"
+        CODEX_LINUX_ICON_SOURCE="$workspace/icon.png"
+        error() { echo "[ERROR] $*" >&2; exit 1; }
+        warn() { echo "[WARN] $*" >&2; }
+        # shellcheck disable=SC1091
+        source "$REPO_DIR/scripts/lib/webview-install.sh"
+        extract_webview "$workspace/Codex.app"
+    ) >"$output_log" 2>&1
+    rc=$?
+    set -e
+    [ "$rc" -ne 0 ] || fail "extract_webview should fail when upstream webview/index.html is missing"
+    assert_contains "$output_log" "Missing webview entrypoint"
+}
+
 test_common_helper_sourcing() {
     info "Checking shared packaging helpers"
     local probe_file="$TMP_DIR/probe.txt"
@@ -186,6 +234,30 @@ test_common_helper_sourcing() {
     # shellcheck disable=SC1091
     source "$REPO_DIR/scripts/lib/package-common.sh"
     ensure_file_exists "$probe_file" "probe file"
+}
+
+test_package_layout_requires_webview_entrypoint() {
+    info "Checking package helpers reject an app without webview/index.html"
+    local workspace="$TMP_DIR/package-webview-entrypoint"
+    local app_dir="$workspace/app"
+    local output_log="$workspace/output.log"
+
+    mkdir -p "$app_dir/content/webview"
+    printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$app_dir/start.sh"
+    chmod +x "$app_dir/start.sh"
+
+    set +e
+    (
+        APP_DIR="$app_dir"
+        # shellcheck disable=SC1091
+        source "$REPO_DIR/scripts/lib/package-common.sh"
+        ensure_app_layout
+    ) >"$output_log" 2>&1
+    local rc=$?
+    set -e
+
+    [ "$rc" -ne 0 ] || fail "ensure_app_layout should fail when webview/index.html is missing"
+    assert_contains "$output_log" "Missing webview entrypoint"
 }
 
 test_package_payload_permission_normalization() {
@@ -380,9 +452,13 @@ SCRIPT
     assert_file_exists "$pkg_root/opt/codex-desktop/update-builder/scripts/lib/linux-features.js"
     assert_file_exists "$pkg_root/opt/codex-desktop/update-builder/scripts/lib/linux-features.sh"
     assert_file_exists "$pkg_root/opt/codex-desktop/update-builder/scripts/lib/linux-target-context.js"
+    assert_file_exists "$pkg_root/opt/codex-desktop/update-builder/scripts/patches/descriptor.js"
     assert_file_exists "$pkg_root/opt/codex-desktop/update-builder/scripts/patches/engine.js"
-    assert_file_exists "$pkg_root/opt/codex-desktop/update-builder/scripts/patches/registry.js"
-    assert_file_exists "$pkg_root/opt/codex-desktop/update-builder/scripts/patches/shared.js"
+    assert_file_exists "$pkg_root/opt/codex-desktop/update-builder/scripts/patches/runner.js"
+    assert_file_exists "$pkg_root/opt/codex-desktop/update-builder/scripts/patches/lib/assets.js"
+    assert_file_exists "$pkg_root/opt/codex-desktop/update-builder/scripts/patches/lib/minified-js.js"
+    assert_file_exists "$pkg_root/opt/codex-desktop/update-builder/scripts/patches/lib/settings-keys.js"
+    assert_file_exists "$pkg_root/opt/codex-desktop/update-builder/scripts/patches/impl/webview/index.js"
     assert_file_exists "$pkg_root/opt/codex-desktop/update-builder/scripts/patches/core/all-linux/main-process/lifecycle/patch.js"
     assert_file_exists "$pkg_root/opt/codex-desktop/update-builder/scripts/patches/core/all-linux/webview/theme-and-sunset/patch.js"
     assert_file_exists "$pkg_root/opt/codex-desktop/update-builder/scripts/patches/core/distro/nixos/README.md"
@@ -472,6 +548,7 @@ test_update_builder_preserves_enabled_linux_features_config() {
     local staged_config="$root/opt/codex-desktop/update-builder/linux-features/features.json"
     local staged_local_manifest="$root/opt/codex-desktop/update-builder/linux-features/local/local-tool/feature.json"
     local source_info="$root/opt/codex-desktop/update-builder/.codex-linux/source-info.json"
+    local update_builder_manifest="$root/opt/codex-desktop/update-builder/.codex-linux/update-builder-manifest.txt"
 
     mkdir -p "$workspace"
     make_fake_app "$app_dir"
@@ -523,12 +600,16 @@ JSON
 
     assert_file_exists "$staged_config"
     assert_file_exists "$staged_local_manifest"
+    assert_file_exists "$update_builder_manifest"
     assert_contains "$staged_config" "example-feature"
     assert_contains "$staged_config" "local-tool"
     assert_contains "$staged_config" "tweaks"
     assert_contains "$staged_config" "mode"
     assert_not_contains "$staged_config" "localComment"
     assert_not_contains "$staged_config" "disabled-feature"
+    assert_contains "$update_builder_manifest" "record-replay-linux/Cargo.toml"
+    assert_contains "$update_builder_manifest" "assets/codex-linux.png"
+    assert_not_contains "$update_builder_manifest" "^node-runtime/"
 
     node - "$staged_config" <<'NODE' || fail "Expected staged Linux features config to be sanitized"
 const fs = require("node:fs");
@@ -1181,11 +1262,16 @@ test_missing_input_failure() {
     local workspace="$TMP_DIR/missing"
     local bin_dir="$workspace/bin"
     local rpm_app_dir="$workspace/rpm-app"
+    local rpm_no_webview_app_dir="$workspace/rpm-no-webview-app"
     local rpm_log="$workspace/rpm-missing-runtime.log"
+    local rpm_no_webview_log="$workspace/rpm-missing-webview.log"
 
     mkdir -p "$workspace"
     make_stub_bin_dir "$bin_dir"
     make_fake_app "$rpm_app_dir"
+    mkdir -p "$rpm_no_webview_app_dir/content/webview"
+    printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$rpm_no_webview_app_dir/start.sh"
+    chmod +x "$rpm_no_webview_app_dir/start.sh"
     cat > "$bin_dir/dpkg" <<'SCRIPT'
 #!/usr/bin/env bash
 echo amd64
@@ -1199,6 +1285,11 @@ SCRIPT
     if PATH="$bin_dir:$PATH" APP_DIR_OVERRIDE="$workspace/does-not-exist" PKG_ROOT_OVERRIDE="$workspace/deb-root" bash "$REPO_DIR/scripts/build-deb.sh" >/dev/null 2>&1; then
         fail "build-deb.sh should fail when APP_DIR is missing"
     fi
+
+    if APP_DIR_OVERRIDE="$rpm_no_webview_app_dir" PACKAGE_WITH_UPDATER=0 bash "$REPO_DIR/scripts/build-rpm.sh" >"$rpm_no_webview_log" 2>&1; then
+        fail "build-rpm.sh should fail when webview/index.html is missing"
+    fi
+    assert_contains "$rpm_no_webview_log" "Missing webview entrypoint"
 
     if APP_DIR_OVERRIDE="$rpm_app_dir" PACKAGED_RUNTIME_SOURCE="$workspace/does-not-exist.sh" bash "$REPO_DIR/scripts/build-rpm.sh" >"$rpm_log" 2>&1; then
         fail "build-rpm.sh should fail when PACKAGED_RUNTIME_SOURCE is missing"
@@ -1307,11 +1398,44 @@ SCRIPT
     [ -z "$third_line" ] || fail "Expected make build-app-fresh default DMG argument to be empty, got: $(cat "$install_log")"
 }
 
+test_make_build_dev_app_writes_host_portable_launcher_symlink() {
+    info "Checking make build-dev-app writes a host-portable launcher symlink"
+    local workspace="$TMP_DIR/make-build-dev-app"
+    local install_log="$workspace/install-env.log"
+    local launcher="$workspace/bin/codex-cua-lab"
+    local target
+
+    mkdir -p "$workspace"
+
+    cat > "$workspace/install.sh" <<'SCRIPT'
+#!/usr/bin/env bash
+set -eu
+printf '%s\n' "$CODEX_APP_ID" > "$TEST_INSTALL_LOG"
+printf '%s\n' "$CODEX_APP_DISPLAY_NAME" >> "$TEST_INSTALL_LOG"
+printf '%s\n' "$CODEX_INSTALL_DIR" >> "$TEST_INSTALL_LOG"
+mkdir -p "$CODEX_INSTALL_DIR"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$CODEX_INSTALL_DIR/start.sh"
+chmod +x "$CODEX_INSTALL_DIR/start.sh"
+SCRIPT
+    chmod +x "$workspace/install.sh"
+
+    TEST_INSTALL_LOG="$install_log" make -f "$REPO_DIR/Makefile" -C "$workspace" build-dev-app >/dev/null
+
+    assert_file_exists "$launcher"
+    target="$(readlink "$launcher")"
+    [ "$target" = "../codex-cua-lab-app/start.sh" ] \
+        || fail "Expected dev app launcher to use a relative symlink, got: $target"
+    [ -x "$launcher" ] || fail "Expected dev app launcher symlink to resolve on the host"
+    assert_contains "$install_log" "codex-cua-lab"
+    assert_contains "$install_log" "Codex CUA Lab"
+    assert_contains "$install_log" "$workspace/codex-cua-lab-app"
+}
+
 test_installer_refreshes_stale_cached_dmg_metadata() {
     info "Checking installer DMG cache freshness metadata branches"
     local workspace="$TMP_DIR/dmg-cache-refresh"
     local bin_dir="$workspace/bin"
-    local url="https://persistent.oaistatic.com/codex-app-prod/Codex.dmg"
+    local url="https://persistent.oaistatic.com/codex-app-prod/ChatGPT.dmg"
     local url_sha256
 
     url_sha256="$(printf '%s' "$url" | sha256sum | awk '{print $1}')"
@@ -1436,6 +1560,50 @@ EOF
         TEST_DOWNLOAD_CONTENT=new
     [ "$(cat "$differing/Codex.dmg")" = "new" ] || fail "Expected differing metadata to refresh cache"
     assert_contains "$differing/curl.log" "GET"
+
+    local differing_pinned="$workspace/differing-pinned"
+    mkdir -p "$differing_pinned"
+    printf '%s' "old" >"$differing_pinned/Codex.dmg"
+    cat >"$differing_pinned/Codex.dmg.metadata" <<EOF
+url_sha256=$url_sha256
+etag=old-etag
+last_modified=Thu, 04 Jun 2026 00:00:00 GMT
+content_length=3
+EOF
+    run_dmg_cache_case "$differing_pinned" "$differing_pinned/output.log" \
+        CODEX_DMG_REFRESH_MODE=pinned \
+        TEST_ETAG=fresh-etag \
+        TEST_LAST_MODIFIED="Thu, 04 Jun 2026 00:00:00 GMT" \
+        TEST_CONTENT_LENGTH=3 \
+        TEST_DOWNLOAD_CONTENT=new
+    [ "$(cat "$differing_pinned/Codex.dmg")" = "old" ] || fail "Expected pinned stale cache to keep old DMG"
+    assert_not_contains "$differing_pinned/curl.log" "HEAD"
+    assert_not_contains "$differing_pinned/curl.log" "GET"
+    assert_contains "$differing_pinned/output.log" "CODEX_DMG_REFRESH_MODE=pinned"
+
+    local no_metadata_pinned="$workspace/no-metadata-pinned"
+    mkdir -p "$no_metadata_pinned"
+    printf '%s' "old" >"$no_metadata_pinned/Codex.dmg"
+    run_dmg_cache_case "$no_metadata_pinned" "$no_metadata_pinned/output.log" \
+        CODEX_DMG_REFRESH_MODE=pinned \
+        TEST_ETAG=fresh-etag \
+        TEST_LAST_MODIFIED="Thu, 04 Jun 2026 00:00:00 GMT" \
+        TEST_CONTENT_LENGTH=3 \
+        TEST_DOWNLOAD_CONTENT=new
+    [ "$(cat "$no_metadata_pinned/Codex.dmg")" = "old" ] || fail "Expected pinned missing metadata cache to keep old DMG"
+    assert_not_contains "$no_metadata_pinned/curl.log" "HEAD"
+    assert_not_contains "$no_metadata_pinned/curl.log" "GET"
+
+    local missing_pinned="$workspace/missing-pinned"
+    mkdir -p "$missing_pinned"
+    if run_dmg_cache_case "$missing_pinned" "$missing_pinned/output.log" \
+        CODEX_DMG_REFRESH_MODE=pinned
+    then
+        fail "Expected pinned mode without cached DMG to fail"
+    fi
+    assert_not_contains "$missing_pinned/curl.log" "HEAD"
+    assert_not_contains "$missing_pinned/curl.log" "GET"
+    assert_contains "$missing_pinned/output.log" "requires an existing cached DMG"
 
     local failed_get="$workspace/failed-get"
     mkdir -p "$failed_get"
@@ -1678,13 +1846,41 @@ SCRIPT
     assert_file_not_exists "$source_dir/Codex.dmg.metadata"
 }
 
+test_fresh_pinned_dmg_preserves_cached_dmg_metadata() {
+    info "Checking --fresh preserves cached DMG metadata in pinned refresh mode"
+    local workspace="$TMP_DIR/fresh-pinned-dmg-metadata"
+    local source_dir="$workspace/source"
+
+    mkdir -p "$source_dir"
+    printf '%s' "cached" >"$source_dir/Codex.dmg"
+    printf '%s' "metadata" >"$source_dir/Codex.dmg.metadata"
+
+    TEST_SOURCE_DIR="$source_dir" REPO_DIR="$REPO_DIR" bash <<'SCRIPT'
+set -Eeuo pipefail
+
+SCRIPT_DIR="$TEST_SOURCE_DIR"
+WORK_DIR="$(mktemp -d)"
+INSTALL_DIR="$TEST_SOURCE_DIR/codex-app"
+CODEX_DMG_REFRESH_MODE=pinned
+# shellcheck disable=SC1091
+source "$REPO_DIR/scripts/lib/install-helpers.sh"
+
+FRESH_INSTALL=1
+REUSE_CACHED_DMG=0
+prepare_install
+SCRIPT
+
+    assert_file_exists "$source_dir/Codex.dmg"
+    assert_file_exists "$source_dir/Codex.dmg.metadata"
+}
+
 test_fresh_reuse_dmg_uses_cache_when_metadata_matches() {
     info "Checking --fresh --reuse-dmg reuses cached DMG when metadata matches"
     local workspace="$TMP_DIR/fresh-reuse-dmg-metadata"
     local bin_dir="$workspace/bin"
     local source_dir="$workspace/source"
     local output_log="$workspace/output.log"
-    local url="https://persistent.oaistatic.com/codex-app-prod/Codex.dmg"
+    local url="https://persistent.oaistatic.com/codex-app-prod/ChatGPT.dmg"
     local url_sha256
 
     url_sha256="$(printf '%s' "$url" | sha256sum | awk '{print $1}')"
@@ -1868,6 +2064,153 @@ test_fedora_dependency_bootstrap_installs_rpmbuild() {
     assert_contains "$ci_entrypoint" 'CODEX_INSTALL_DEPS_SOURCE_ONLY=1'
     assert_contains "$ci_entrypoint" "dnf install -y 7zip || dnf install -y p7zip p7zip-plugins || true"
     assert_contains "$ci_entrypoint" "bootstrap_modern_7zz_for_ci"
+}
+
+test_fedora_atomic_rpm_ostree_target_detection() {
+    info "Checking Fedora Atomic rpm-ostree target detection"
+    local workspace="$TMP_DIR/fedora-atomic-target"
+    local fake_bin="$workspace/bin"
+    local os_release="$workspace/os-release"
+    local ostree_booted="$workspace/ostree-booted"
+    local install_log="$workspace/install-deps.log"
+    local wizard_log="$workspace/bootstrap-wizard.log"
+    local helper_output="$workspace/helper-output.log"
+
+    mkdir -p "$fake_bin"
+    printf '%s\n' '#!/bin/sh' 'exit 0' > "$fake_bin/rpm-ostree"
+    printf '%s\n' '#!/bin/sh' 'exit 0' > "$fake_bin/rpmbuild"
+    chmod +x "$fake_bin/rpm-ostree" "$fake_bin/rpmbuild"
+    cat > "$os_release" <<'EOF'
+ID=fedora
+ID_LIKE=
+VERSION_ID="44"
+PRETTY_NAME="Fedora Linux 44 (KDE Plasma Desktop Edition)"
+VARIANT_ID=kde
+EOF
+    : > "$ostree_booted"
+
+    PATH="$fake_bin:/usr/bin:/bin" \
+    OS_RELEASE_FILE="$os_release" \
+    OSTREE_BOOTED_FILE="$ostree_booted" \
+    DETECT_ONLY=1 \
+        bash "$REPO_DIR/scripts/install-deps.sh" >"$install_log"
+    assert_contains "$install_log" "Detected dependency profile: rpm-ostree"
+    assert_contains "$install_log" "ID=fedora"
+    assert_not_contains "$install_log" "ID_LIKE=ubuntu"
+
+    local missing_bin="$workspace/missing-bin"
+    local missing_log="$workspace/install-deps-missing.log"
+    mkdir -p "$missing_bin"
+    for command in dirname pwd uname; do
+        ln -s "$(command -v "$command")" "$missing_bin/$command"
+    done
+    printf '%s\n' '#!/bin/sh' 'exit 0' > "$missing_bin/rpm-ostree"
+    chmod +x "$missing_bin/rpm-ostree"
+
+    local status=0
+    PATH="$missing_bin" \
+    OS_RELEASE_FILE="$os_release" \
+    OSTREE_BOOTED_FILE="$ostree_booted" \
+    HOME="$workspace/home-missing" \
+        /bin/bash "$REPO_DIR/scripts/install-deps.sh" >"$missing_log" 2>&1 || status=$?
+    [ "$status" -ne 0 ] || fail "Expected rpm-ostree install-deps to stop before packages are layered"
+    assert_contains "$missing_log" "sudo rpm-ostree install python3 7zip curl unzip rpm-build make gcc-c++"
+    assert_contains "$missing_log" "Still missing:"
+    assert_not_contains "$missing_log" "nodejs npm"
+
+    local layered_bin="$workspace/layered-bin"
+    local layered_log="$workspace/install-deps-layered.log"
+    mkdir -p "$layered_bin"
+    for command in dirname pwd uname grep; do
+        ln -s "$(command -v "$command")" "$layered_bin/$command"
+    done
+    for command in rpm-ostree python3 7zz curl unzip rpmbuild make g++ cargo; do
+        cat > "$layered_bin/$command" <<'SCRIPT'
+#!/bin/sh
+command_name="${0##*/}"
+case "$command_name" in
+    7zz) echo "7-Zip 26.00" ;;
+    cargo) echo "cargo 1.96.0" ;;
+    *) exit 0 ;;
+esac
+SCRIPT
+        chmod +x "$layered_bin/$command"
+    done
+
+    PATH="$layered_bin" \
+    OS_RELEASE_FILE="$os_release" \
+    OSTREE_BOOTED_FILE="$ostree_booted" \
+    HOME="$workspace/home-layered" \
+        /bin/bash "$REPO_DIR/scripts/install-deps.sh" >"$layered_log" 2>&1
+    assert_contains "$layered_log" "rpm-ostree layered build dependencies are already available"
+    assert_contains "$layered_log" "Skipping system Node.js check; install.sh provides the managed Node.js runtime"
+    assert_contains "$layered_log" "All dependencies installed"
+    assert_not_contains "$layered_log" "Node.js 20+ with npm and npx is required"
+
+    PATH="$fake_bin:/usr/bin:/bin" \
+    OS_RELEASE_FILE="$os_release" \
+    OSTREE_BOOTED_FILE="$ostree_booted" \
+    CODEX_BOOTSTRAP_DRY_RUN=1 \
+    CODEX_BOOTSTRAP_NONINTERACTIVE=1 \
+    CODEX_LINUX_FEATURES_ROOT="$REPO_DIR/linux-features" \
+    CODEX_LINUX_FEATURES_CONFIG="$workspace/features.json" \
+        bash "$REPO_DIR/scripts/bootstrap-wizard.sh" >"$wizard_log"
+    assert_contains "$wizard_log" "Package manager: rpm-ostree"
+    assert_contains "$wizard_log" "Native package format: rpm"
+    assert_contains "$wizard_log" "Atomic host: yes"
+
+    CODEX_LINUX_TARGET_ATOMIC=maybe \
+    PATH="$fake_bin" \
+    OS_RELEASE_FILE="$os_release" \
+    OSTREE_BOOTED_FILE="$ostree_booted" \
+    /bin/bash -c '
+        # shellcheck disable=SC1091
+        source "$1"
+        OS_RELEASE_ID="$(os_release_field ID)"
+        OS_RELEASE_ID_LIKE="$(os_release_field ID_LIKE 2>/dev/null || true)"
+        OS_RELEASE_VERSION_ID="$(os_release_field VERSION_ID)"
+        printf "manager=%s\natomic=%s\n" \
+            "$(detect_package_manager)" \
+            "$(linux_target_is_atomic && echo yes || echo no)"
+    ' _ "$REPO_DIR/scripts/lib/linux-target-detect.sh" >"$helper_output"
+    assert_contains "$helper_output" "manager=rpm-ostree"
+    assert_contains "$helper_output" "atomic=yes"
+
+    CODEX_LINUX_TARGET_ATOMIC=0 \
+    PATH="$fake_bin" \
+    OS_RELEASE_FILE="$os_release" \
+    OSTREE_BOOTED_FILE="$ostree_booted" \
+    /bin/bash -c '
+        # shellcheck disable=SC1091
+        source "$1"
+        OS_RELEASE_ID="$(os_release_field ID)"
+        OS_RELEASE_ID_LIKE="$(os_release_field ID_LIKE 2>/dev/null || true)"
+        OS_RELEASE_VERSION_ID="$(os_release_field VERSION_ID)"
+        printf "manager=%s\natomic=%s\n" \
+            "$(detect_package_manager)" \
+            "$(linux_target_is_atomic && echo yes || echo no)"
+    ' _ "$REPO_DIR/scripts/lib/linux-target-detect.sh" >"$helper_output"
+    assert_contains "$helper_output" "manager=unknown"
+    assert_contains "$helper_output" "atomic=no"
+
+    rm -f "$ostree_booted"
+    PATH="$fake_bin" \
+    OS_RELEASE_FILE="$os_release" \
+    OSTREE_BOOTED_FILE="$ostree_booted" \
+    /bin/bash -c '
+        # shellcheck disable=SC1091
+        source "$1"
+        OS_RELEASE_ID="$(os_release_field ID)"
+        OS_RELEASE_ID_LIKE="$(os_release_field ID_LIKE 2>/dev/null || true)"
+        OS_RELEASE_VERSION_ID="$(os_release_field VERSION_ID)"
+        printf "manager=%s\nformat=%s\natomic=%s\n" \
+            "$(detect_package_manager)" \
+            "$(detect_package_format)" \
+            "$(linux_target_is_atomic && echo yes || echo no)"
+    ' _ "$REPO_DIR/scripts/lib/linux-target-detect.sh" >"$helper_output"
+    assert_contains "$helper_output" "manager=unknown"
+    assert_contains "$helper_output" "format=rpm"
+    assert_contains "$helper_output" "atomic=no"
 }
 
 test_setup_native_wizard_noninteractive_feature_writer() {
@@ -2561,24 +2904,6 @@ test_setup_native_wizard_cleanup_deletes_only_confirmed_paths() {
     assert_contains "$output_log" "Skipped $plugin_cache"
 }
 
-test_upstream_build_app_workflow_tracks_dmg_metadata() {
-    info "Checking upstream build-app workflow metadata and cache behavior"
-    local workflow="$REPO_DIR/.github/workflows/upstream-build-app.yml"
-
-    assert_file_exists "$workflow"
-    assert_contains "$workflow" 'name: Upstream Build App'
-    assert_contains "$workflow" 'UPSTREAM_DMG_URL: https://persistent.oaistatic.com/codex-app-prod/Codex.dmg'
-    assert_contains "$workflow" 'actions/cache@v4'
-    assert_contains "$workflow" 'path: /tmp/codex-upstream-ci/Codex.dmg'
-    assert_contains "$workflow" 'Last-Modified'
-    assert_contains "$workflow" 'sha256sum'
-    assert_contains "$workflow" 'CODEX_PATCH_REPORT_JSON="$GITHUB_WORKSPACE/patch-report.json"'
-    assert_contains "$workflow" 'node scripts/ci/validate-patch-report.js patch-report.json --profile upstream-build'
-    assert_contains "$workflow" 'make build-app DMG=/tmp/codex-upstream-ci/Codex.dmg'
-    assert_contains "$workflow" 'DMG Last-Modified'
-    assert_contains "$workflow" 'DMG SHA-256'
-}
-
 make_update_nix_hash_fixture() {
     local fixture="$1"
     local hash_a="sha256-VVQNu/E7Wuyxfsy93Gorknr0t7H7wy9kxMOiBZYOo/o="
@@ -2593,7 +2918,7 @@ make_update_nix_hash_fixture() {
   electronVersion = "42.1.0";
 
   codexDmg = pkgs.fetchurl {
-    url = "https://persistent.oaistatic.com/codex-app-prod/Codex.dmg";
+    url = "https://persistent.oaistatic.com/codex-app-prod/ChatGPT.dmg";
     hash = "$hash_a";
   };
 
@@ -3117,6 +3442,7 @@ SCRIPT
 
     assert_file_exists "$workspace/work/.v8-nullptr-fix.h"
     assert_file_exists "$workspace/work/.cxx-v8-nullptr"
+    assert_contains "$workspace/work/.cxx-v8-nullptr" "#!/usr/bin/env bash"
     assert_contains "$workspace/work/.v8-nullptr-fix.h" "using std::nullptr_t;"
     assert_contains "$cxx_state" "CXX=$workspace/work/.cxx-v8-nullptr"
     assert_contains "$cxx_log" "-include"
@@ -3195,6 +3521,12 @@ case "$args" in
 esac
 SCRIPT
     chmod +x "$fake_bin/npm"
+
+    cat > "$fake_bin/c++" <<'SCRIPT'
+#!/usr/bin/env bash
+exit 0
+SCRIPT
+    chmod +x "$fake_bin/c++"
 
     cat > "$fake_bin/npx" <<'SCRIPT'
 #!/usr/bin/env bash
@@ -3312,6 +3644,132 @@ test_bundled_plugin_builders_accept_prebuilt_binaries() {
     assert_contains "$output_log" "$host"
 }
 
+test_launcher_managed_node_handles_unset_path() {
+    info "Checking managed Node PATH setup without an inherited PATH"
+    local workspace="$TMP_DIR/launcher-unset-path"
+    local probe="$workspace/probe.sh"
+    local managed_node_bin_dir
+
+    managed_node_bin_dir="$(dirname "$(command -v node)")"
+    mkdir -p "$workspace"
+
+    cat > "$probe" <<EOF
+#!/usr/bin/env bash
+set -u
+SCRIPT_DIR=$(printf '%q' "$workspace")
+MANAGED_NODE_BIN_DIR=$(printf '%q' "$managed_node_bin_dir")
+EOF
+    awk '
+        /^prepend_managed_node_runtime_to_path\(\) \{/ { capture = 1 }
+        capture { print }
+        capture && /^}/ { exit }
+    ' "$REPO_DIR/launcher/start.sh.template" >> "$probe"
+    cat >> "$probe" <<'EOF'
+unset CODEX_LINUX_USER_PATH
+unset PATH
+prepend_managed_node_runtime_to_path
+[ "$PATH" = "$MANAGED_NODE_BIN_DIR" ] || exit 2
+[ "${CODEX_LINUX_USER_PATH+x}" = x ] || exit 3
+[ -z "$CODEX_LINUX_USER_PATH" ] || exit 4
+[ "$CODEX_MANAGED_NODE_RUNTIME_DIR" = "$SCRIPT_DIR/resources/node-runtime" ] || exit 5
+
+PATH="/tmp/untrusted:$MANAGED_NODE_BIN_DIR:/usr/bin"
+unset CODEX_LINUX_USER_PATH
+prepend_managed_node_runtime_to_path
+case "$PATH" in
+    "$MANAGED_NODE_BIN_DIR":*) ;;
+    *) exit 6 ;;
+esac
+[ "$CODEX_LINUX_USER_PATH" = "/tmp/untrusted:$MANAGED_NODE_BIN_DIR:/usr/bin" ] || exit 7
+EOF
+
+    /usr/bin/bash "$probe" || fail "Expected managed Node PATH setup to tolerate an unset PATH"
+}
+
+test_launcher_rejects_missing_webview_entrypoint() {
+    info "Checking launcher rejects an app without webview/index.html"
+    local workspace="$TMP_DIR/launcher-webview-entrypoint"
+    local app_dir="$workspace/app"
+    local home_dir="$workspace/home"
+    local runtime_dir="$workspace/runtime"
+    local electron_marker="$workspace/electron-called"
+    local launcher_log="$home_dir/.cache/codex-desktop/launcher.log"
+
+    mkdir -p \
+        "$app_dir/.codex-linux/cold-start.d" \
+        "$app_dir/.codex-linux/env.d" \
+        "$app_dir/.codex-linux/features" \
+        "$app_dir/.codex-linux/prelaunch.d" \
+        "$app_dir/.codex-linux/electron-args.d" \
+        "$app_dir/.codex-linux/launcher.d" \
+        "$app_dir/.codex-linux/after-exit.d" \
+        "$app_dir/content/webview" \
+        "$app_dir/resources/node-runtime/bin" \
+        "$app_dir/resources/plugins/openai-bundled/.agents/plugins" \
+        "$app_dir/resources/plugins/openai-bundled/plugins" \
+        "$home_dir" \
+        "$runtime_dir"
+
+    {
+        printf '%s\n' \
+            '#!/usr/bin/env bash' \
+            'set -Eeuo pipefail' \
+            'CODEX_LINUX_APP_ID=codex-desktop' \
+            'CODEX_LINUX_APP_DISPLAY_NAME="Codex Desktop"' \
+            'CODEX_LINUX_WEBVIEW_PORT="${CODEX_WEBVIEW_PORT:-5175}"'
+        cat "$REPO_DIR/launcher/start.sh.template"
+    } > "$app_dir/start.sh"
+    chmod +x "$app_dir/start.sh"
+    cp "$REPO_DIR/launcher/webview-server.py" "$app_dir/.codex-linux/webview-server.py"
+    ln -s "$(command -v node)" "$app_dir/resources/node-runtime/bin/node"
+
+    cat > "$app_dir/electron" <<'SCRIPT'
+#!/usr/bin/env bash
+printf '%s\n' "${ELECTRON_RENDERER_URL:-}" > "$ELECTRON_MARKER"
+exit 0
+SCRIPT
+    chmod +x "$app_dir/electron"
+
+    set +e
+    timeout 20 env -i \
+        PATH="/usr/bin:/bin:/usr/local/bin" \
+        HOME="$home_dir" \
+        XDG_RUNTIME_DIR="$runtime_dir" \
+        CODEX_CLI_PATH=/bin/true \
+        CODEX_WEBVIEW_PORT=45675 \
+        ELECTRON_MARKER="$electron_marker" \
+        "$app_dir/start.sh" >/dev/null 2>&1
+    local rc=$?
+    set -e
+
+    [ "$rc" -ne 124 ] || fail "Launcher hung while handling a missing webview entrypoint"
+    [ "$rc" -ne 0 ] || fail "Launcher should fail when webview/index.html is missing"
+    [ ! -e "$electron_marker" ] || fail "Launcher should not reach Electron when webview/index.html is missing"
+    assert_contains "$launcher_log" "webview bundle is incomplete"
+
+    rm -f "$electron_marker"
+    set +e
+    timeout 20 env -i \
+        PATH="/usr/bin:/bin:/usr/local/bin" \
+        HOME="$home_dir" \
+        XDG_RUNTIME_DIR="$runtime_dir" \
+        CODEX_CLI_PATH=/bin/true \
+        CODEX_WEBVIEW_PORT=45675 \
+        CODEX_LINUX_ALLOW_RENDERER_URL_OVERRIDE=1 \
+        ELECTRON_RENDERER_URL="http://127.0.0.1:9999/" \
+        ELECTRON_MARKER="$electron_marker" \
+        "$app_dir/start.sh" >/dev/null 2>&1
+    rc=$?
+    set -e
+
+    [ "$rc" -ne 124 ] || fail "Launcher hung while using an explicit renderer URL override"
+    [ "$rc" -eq 0 ] || fail "Launcher should allow an explicit renderer URL override without local webview assets"
+    assert_file_exists "$electron_marker"
+    [ "$(cat "$electron_marker")" = "http://127.0.0.1:9999/" ] \
+        || fail "Launcher should preserve explicit renderer URL override"
+    assert_contains "$launcher_log" "Skipping packaged webview setup because ELECTRON_RENDERER_URL override is enabled"
+}
+
 test_launcher_template_sanity() {
     info "Checking launcher template markers"
     assert_contains "$REPO_DIR/install.sh" 'DEFAULT_CODEX_WEBVIEW_PORT=5175'
@@ -3361,6 +3819,8 @@ test_launcher_template_sanity() {
     assert_contains "$REPO_DIR/launcher/start.sh.template" "ADOPTED_WEBVIEW_PID"
     assert_contains "$REPO_DIR/launcher/start.sh.template" "Reusing webview server pid="
     assert_contains "$REPO_DIR/launcher/start.sh.template" "run_cold_start_hooks"
+    assert_contains "$REPO_DIR/launcher/start.sh.template" '2>/dev/null 1>&"\$LAUNCHER_EARLY_STDERR_FD" || true'
+    assert_not_contains "$REPO_DIR/launcher/start.sh.template" '>&"\$LAUNCHER_EARLY_STDERR_FD" 2>/dev/null || true'
     assert_contains "$REPO_DIR/linux-features/remote-mobile-control/feature.json" '"stageHook": "./stage.sh"'
     assert_contains "$REPO_DIR/linux-features/remote-mobile-control/stage.sh" "cold-start.d"
     assert_contains "$REPO_DIR/linux-features/remote-mobile-control/stage.sh" "remote-mobile-control"
@@ -3394,8 +3854,8 @@ cold_start_hooks_body = source.split("run_cold_start_hooks() {", 1)[1].split("ru
 stop_body = source.split("stop_owned_webview_server() {", 1)[1].split("owned_webview_server_pid() {", 1)[0]
 stale_body = source.split("pid_is_stale_webview_server() {", 1)[1].split("stop_owned_webview_server() {", 1)[0]
 multi_body = source.split("configure_multi_launch_instance() {", 1)[1].split('WEBVIEW_ORIGIN="http://127.0.0.1:$CODEX_LINUX_WEBVIEW_PORT"', 1)[0]
-adopt_body = source.split("adopt_existing_webview_server() {", 1)[1].split("ensure_webview_server() {", 1)[0]
-ensure_body = source.split("ensure_webview_server() {", 1)[1].split("wait_for_webview_server", 1)[0]
+adopt_body = source.split("adopt_existing_webview_server() {", 1)[1].split("start_webview_server() {", 1)[0]
+ensure_body = source.split("start_webview_server() {", 1)[1].split("wait_for_webview_server", 1)[0]
 reconcile_body = source.split("reconcile_runtime_state() {", 1)[1].split("set_electron_defaults() {", 1)[0]
 orphan_body = source.split("pid_is_orphaned_runtime_process() {", 1)[1].split("detect_cross_install_conflict() {", 1)[0]
 reap_body = source.split("reap_orphaned_runtime_processes() {", 1)[1].split("reconcile_runtime_state() {", 1)[0]
@@ -3505,13 +3965,24 @@ if "second_instance_handoff_ready" not in runtime_body:
     raise SystemExit("second-instance handoff must skip cold-start setup")
 if "clear_bundled_marketplace_tmp_cache\nmonitor_bundled_marketplace_tmp_permissions\nreconcile_runtime_state" in runtime_body:
     raise SystemExit("warm-start path must not clear bundled marketplace temp cache")
-if not re.search(r'if needs_cold_start; then\s+log_phase "cold_start_cache_sync_start"\s+clear_bundled_marketplace_tmp_cache.*?monitor_bundled_marketplace_tmp_permissions.*?sync_browser_use_bundled_plugin_cache.*?sync_chrome_bundled_plugin_cache.*?sync_computer_use_bundled_plugin_cache.*?sync_read_aloud_bundled_plugin_cache.*?run_cold_start_hooks.*?log_phase "cold_start_hooks_dispatched"\s+fi', runtime_body, re.S):
-    raise SystemExit("bundled marketplace cleanup, plugin sync, and cold-start hooks must run only on cold start")
+if not re.search(r'if needs_cold_start; then\s+log_phase "cold_start_cache_sync_start"\s+clear_bundled_marketplace_tmp_cache.*?monitor_bundled_marketplace_tmp_permissions.*?stage_bundled_marketplace_metadata.*?sync_browser_use_bundled_plugin_cache &.*?sync_chrome_bundled_plugin_cache &.*?sync_computer_use_bundled_plugin_cache &.*?sync_read_aloud_bundled_plugin_cache &.*?sync_extra_bundled_plugin_cache &.*?run_cold_start_hooks.*?log_phase "cold_start_hooks_dispatched"\s+await_webview_server_ready\s+fi', runtime_body, re.S):
+    raise SystemExit("bundled marketplace cleanup, staged metadata, concurrent plugin syncs, cold-start hooks, and the webview readiness wait must run only on cold start")
+# The plugin syncs run concurrently, so the shared marketplace.json is staged
+# exactly once beforehand instead of racing rm+cp per sync, and every sync is
+# awaited before cold-start hooks so the app never sees a partial cache.
+if source.count('rm -f "$marketplace_plugins_dir/marketplace.json"') != 1:
+    raise SystemExit("bundled marketplace metadata must be staged exactly once, not per plugin sync")
+for sync_pid_var in ("SYNC_BROWSER_USE_PID", "SYNC_CHROME_PID", "SYNC_COMPUTER_USE_PID", "SYNC_READ_ALOUD_PID", "SYNC_EXTRA_PID"):
+    if 'wait "$' + sync_pid_var + '"' not in runtime_body:
+        raise SystemExit(f"cold start must await concurrent plugin sync {sync_pid_var}")
+    if runtime_body.index('wait "$' + sync_pid_var + '"') > runtime_body.index("run_cold_start_hooks"):
+        raise SystemExit(f"plugin sync {sync_pid_var} must be awaited before cold-start hooks run")
 for marker in (
     "initial_launch_state_refresh_start",
     "initial_launch_state_refreshed",
     "feature_prelaunch_start",
     "packaged_prelaunch_start",
+    "bundled_marketplace_metadata_staged",
     "browser_use_plugin_cache_synced",
     "chrome_plugin_cache_synced",
     "computer_use_plugin_cache_synced",
@@ -3527,13 +3998,24 @@ if 'if needs_cold_start && [ -z "$CODEX_CLI_PATH" ]; then' not in runtime_body:
     raise SystemExit("second-instance handoff must skip missing-CLI failure")
 if '"$HOME/.bun/bin/codex"' not in source:
     raise SystemExit("CLI lookup must include bun global install path")
+if "codex_cli_version_probe()" not in source or "codex_cli_version()" not in source:
+    raise SystemExit("CLI lookup must log a bounded best-effort resolved CLI version probe")
+if "version unknown; set CODEX_CLI_PATH=/path/to/codex" not in source:
+    raise SystemExit("CLI lookup diagnostics must explain explicit CODEX_CLI_PATH pinning")
+if 'local self_pid="${BASHPID:-$$}"' not in source or 'pid_parent_matches "$probe_pid" "$self_pid"' not in source:
+    raise SystemExit("CLI version probe watchdog must guard kills against PID reuse")
+if source.count('{ exec 9>&-; } 2>/dev/null || true') < 3:
+    raise SystemExit("CLI version probe children and Electron child must close launcher lock fd 9")
+for unexpected in ("find_codex_cli_entry", "codex_cli_version_compare", "codex_cli_version_gt", "sort -V"):
+    if unexpected in source:
+        raise SystemExit(f"launcher must not rank discovered CLI candidates with {unexpected}")
 if "if needs_cold_start;" not in runtime_body:
     raise SystemExit("second-instance handoff must skip CLI preflight")
 if 'run_cold_start_hooks' not in runtime_body:
     raise SystemExit("cold start must run feature-staged hooks before Electron launches")
-if 'export CODEX_LINUX_USER_PATH="${PATH:-}"' not in source:
+if 'local current_path="${PATH:-}"' not in source or 'export CODEX_LINUX_USER_PATH="$current_path"' not in source:
     raise SystemExit("launcher must capture the user PATH before prepending the managed Node runtime")
-if source.index('export CODEX_LINUX_USER_PATH="${PATH:-}"') > source.index('export PATH="$MANAGED_NODE_BIN_DIR:$PATH"'):
+if source.index('export CODEX_LINUX_USER_PATH="$current_path"') > source.index('export PATH="$MANAGED_NODE_BIN_DIR${current_path:+:$current_path}"'):
     raise SystemExit("launcher must capture CODEX_LINUX_USER_PATH before mutating PATH for Electron")
 for name, body in (("prelaunch", prelaunch_hooks_body), ("cold-start", cold_start_hooks_body), ("launcher", launcher_hooks_body)):
     if 'CODEX_HOME="$CODEX_HOME"' not in body:
@@ -3567,13 +4049,37 @@ if 'STARTED_WEBVIEW_PID="$pid"' not in adopt_body:
 if "running_app_is_active" not in adopt_body:
     raise SystemExit("adopt_existing_webview_server must detect live-app reuse before cleanup")
 if "if adopt_existing_webview_server; then" not in ensure_body:
-    raise SystemExit("ensure_webview_server must split adoption from origin verification")
+    raise SystemExit("start_webview_server must split adoption from origin verification")
 if "stop_stale_webview_server" not in ensure_body:
-    raise SystemExit("ensure_webview_server must clear stale deleted webview servers before treating the port as foreign")
+    raise SystemExit("start_webview_server must clear stale deleted webview servers before treating the port as foreign")
 if ensure_body.find("stop_stale_webview_server") > ensure_body.find("is already serving Codex content"):
-    raise SystemExit("ensure_webview_server must try stale-server cleanup before foreign reachable-port failure")
+    raise SystemExit("start_webview_server must try stale-server cleanup before foreign reachable-port failure")
 if "Keeping the live app untouched" not in ensure_body:
-    raise SystemExit("ensure_webview_server must not stop a live app server when validation fails")
+    raise SystemExit("start_webview_server must not stop a live app server when validation fails")
+
+# Cold-start overlap: the webview server is spawned before the plugin cache
+# syncs and only awaited (readiness + origin verification) after them, so the
+# Python server boots while the launcher does unrelated work. Electron must
+# still never launch before the origin is verified.
+if "ensure_webview_server" in source:
+    raise SystemExit("ensure_webview_server was split into start_webview_server + await_webview_server_ready")
+if "WEBVIEW_STARTUP_PENDING" not in source:
+    raise SystemExit("start_webview_server must track pending startup for await_webview_server_ready")
+cold_flow = source.split("elif needs_cold_start; then", 1)[1]
+if "\n    start_webview_server\n" not in cold_flow:
+    raise SystemExit("cold start must spawn the webview server before the cache syncs")
+overlap_start = cold_flow.index("\n    start_webview_server\n")
+overlap_sync = cold_flow.index('log_phase "cold_start_cache_sync_start"')
+overlap_last_sync = cold_flow.index("sync_extra_bundled_plugin_cache")
+overlap_await = cold_flow.index("\n    await_webview_server_ready\n")
+overlap_lock = cold_flow.index("acquire_launcher_lock")
+if not (overlap_start < overlap_sync < overlap_last_sync < overlap_await < overlap_lock):
+    raise SystemExit("webview readiness wait must overlap the plugin cache syncs and finish before the launcher lock")
+await_body = source.split("await_webview_server_ready() {", 1)[1].split("clear_stale_pid_file() {", 1)[0]
+if "wait_for_webview_server" not in await_body or "verify_webview_origin" not in await_body:
+    raise SystemExit("await_webview_server_ready must keep readiness and origin verification before Electron")
+if 'log_phase "webview_ready"' not in await_body:
+    raise SystemExit("await_webview_server_ready must keep the webview_ready phase marker")
 if 'if [ -n "${RUNNING_APP_PID:-}" ] && running_app_is_active; then' not in reconcile_body:
     raise SystemExit("reconcile_runtime_state must preserve runtime markers when a live app still exists")
 if 'discover_running_app_pid' in reconcile_body:
@@ -3696,15 +4202,62 @@ open(output_path, "w", encoding="utf-8").write(probe)
 PY
     chmod +x "$launcher_probe"
 
-    output="$(env -i PATH="$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=default "$launcher_probe" probe --x11 -- --use-gl=angle)"
+    local at_stub_dir="$TMP_DIR/assistive-tech-stubs"
+    mkdir -p "$at_stub_dir/none" "$at_stub_dir/orca" "$at_stub_dir/screenreader" \
+        "$at_stub_dir/toolkit" "$at_stub_dir/atspibus" "$at_stub_dir/slowbus"
+    printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$at_stub_dir/none/pgrep"
+    printf '%s\n' '#!/usr/bin/env bash' "printf 'false\\n'" > "$at_stub_dir/none/gsettings"
+    printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$at_stub_dir/orca/pgrep"
+    printf '%s\n' '#!/usr/bin/env bash' "printf 'false\\n'" > "$at_stub_dir/orca/gsettings"
+    printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$at_stub_dir/screenreader/pgrep"
+    printf '%s\n' '#!/usr/bin/env bash' "printf 'true\\n'" > "$at_stub_dir/screenreader/gsettings"
+    # Computer Use gsettings fallback: toolkit-accessibility on, screen reader off.
+    cat > "$at_stub_dir/toolkit/gsettings" <<'EOF'
+#!/usr/bin/env bash
+case "${3:-}" in
+    toolkit-accessibility) printf 'true\n' ;;
+    *) printf 'false\n' ;;
+esac
+EOF
+    printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$at_stub_dir/toolkit/pgrep"
+    # Computer Use primary path: org.a11y.Status IsEnabled=true via busctl.
+    printf '%s\n' '#!/usr/bin/env bash' "printf 'false\\n'" > "$at_stub_dir/atspibus/gsettings"
+    printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$at_stub_dir/atspibus/pgrep"
+    printf '%s\n' '#!/usr/bin/env bash' "printf 'b true\\n'" > "$at_stub_dir/atspibus/busctl"
+    # Hung session bus: gsettings blocks far past the launch-path budget.
+    cat > "$at_stub_dir/slowbus/gsettings" <<'EOF'
+#!/usr/bin/env bash
+: "${CODEX_TEST_SLOWBUS_PID_FILE:=}"
+if [ -n "$CODEX_TEST_SLOWBUS_PID_FILE" ]; then
+    printf '%s\n' "$$" > "$CODEX_TEST_SLOWBUS_PID_FILE"
+fi
+sleep 5
+printf 'true\n'
+EOF
+    printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$at_stub_dir/slowbus/pgrep"
+    local at_stub_variant
+    for at_stub_variant in none orca screenreader toolkit slowbus; do
+        printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$at_stub_dir/$at_stub_variant/busctl"
+    done
+    chmod +x "$at_stub_dir"/*/pgrep "$at_stub_dir"/*/gsettings "$at_stub_dir"/*/busctl
+
+    output="$(env -i PATH="$at_stub_dir/none:$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=default "$launcher_probe" probe --x11 -- --use-gl=angle)"
     [[ "$output" == *"electron=<--use-gl=angle>"* ]] || fail "launcher must pass Electron args after -- without the separator: $output"
     [[ "$output" != *"electron=<--><--use-gl=angle>"* ]] || fail "launcher must not pass the -- separator to Electron: $output"
     [[ "$output" == *"<--ozone-platform=x11>"* ]] || fail "launcher --x11 must still set the Electron ozone platform: $output"
     [[ "$output" == *"comp=0"* && "$output" != *"<--disable-gpu-compositing>"* ]] || fail "default Linux profile must keep GPU compositing enabled: $output"
-    [[ "$output" == *"renderer_accessibility=1"* && "$output" == *"<--force-renderer-accessibility>"* ]] || fail "default Linux profile must still force renderer accessibility: $output"
+    [[ "$output" == *"renderer_accessibility=0"* && "$output" != *"<--force-renderer-accessibility>"* ]] || fail "default Linux profile must not force renderer accessibility without assistive technology: $output"
 
     output="$(env -i PATH="$PATH" HOME="$HOME" XDG_SESSION_TYPE=wayland CODEX_LINUX_RENDERING_MODE=default "$launcher_probe" probe)"
     [[ "$output" == *"comp=1"* && "$output" == *"<--disable-gpu-compositing>"* ]] || fail "Wayland default profile must disable GPU compositing for side-panel stability: $output"
+
+    local drm_stub_dir="$TMP_DIR/drm-stubs/two"
+    mkdir -p "$drm_stub_dir/card0-DP-2" "$drm_stub_dir/card0-HDMI-3"
+    printf '%s\n' connected > "$drm_stub_dir/card0-DP-2/status"
+    printf '%s\n' connected > "$drm_stub_dir/card0-HDMI-3/status"
+    output="$(env -i PATH="$PATH" HOME="$HOME" CODEX_DRM_CLASS_ROOT="$drm_stub_dir" DISPLAY=:0 XDG_SESSION_TYPE=wayland XDG_CURRENT_DESKTOP=ubuntu:GNOME "$launcher_probe" probe)"
+    [[ "$output" == *"mode=gnome-wayland-multi-monitor"* && "$output" == *"<--ozone-platform=x11>"* ]] || fail "GNOME Wayland multi-monitor auto profile must force X11 for stable maximize/scale behavior: $output"
+    [[ "$output" != *"<--ozone-platform-hint=auto>"* ]] || fail "GNOME Wayland multi-monitor auto profile must not leave backend selection to Electron: $output"
 
     output="$(env -i PATH="$PATH" HOME="$HOME" XDG_SESSION_TYPE=wayland CODEX_LINUX_RENDERING_MODE=default CODEX_ELECTRON_DISABLE_GPU_COMPOSITING=0 "$launcher_probe" probe)"
     [[ "$output" == *"comp=0"* && "$output" != *"<--disable-gpu-compositing>"* ]] || fail "CODEX_ELECTRON_DISABLE_GPU_COMPOSITING=0 must suppress the Wayland compositor workaround: $output"
@@ -3785,17 +4338,20 @@ EOF
     output="$(env -i PATH="$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=wayland-gpu CODEX_FORCE_RENDERER_ACCESSIBILITY=1 "$launcher_probe" probe)"
     [[ "$output" == *"renderer_accessibility=1"* && "$output" == *"<--force-renderer-accessibility>"* ]] || fail "CODEX_FORCE_RENDERER_ACCESSIBILITY=1 must force renderer accessibility under wayland-gpu: $output"
 
-    output="$(env -i PATH="$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=wayland-gpu "$launcher_probe" probe --x11)"
+    output="$(env -i PATH="$at_stub_dir/none:$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=wayland-gpu "$launcher_probe" probe --x11)"
     [[ "$output" == *"mode=wayland-gpu"* && "$output" == *"ozone_platform=x11"* ]] || fail "explicit --x11 must override the wayland-gpu platform: $output"
-    [[ "$output" == *"renderer_accessibility=1"* && "$output" == *"<--force-renderer-accessibility>"* ]] || fail "wayland-gpu with explicit --x11 must keep X11 renderer accessibility default: $output"
+    [[ "$output" == *"renderer_accessibility=0"* && "$output" != *"<--force-renderer-accessibility>"* ]] || fail "wayland-gpu with explicit --x11 must fall back to assistive-technology detection: $output"
 
-    output="$(env -i PATH="$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=wayland-gpu "$launcher_probe" probe --safe-mode)"
+    output="$(env -i PATH="$at_stub_dir/orca:$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=wayland-gpu "$launcher_probe" probe --x11)"
+    [[ "$output" == *"renderer_accessibility=1"* && "$output" == *"<--force-renderer-accessibility>"* ]] || fail "wayland-gpu with explicit --x11 must force renderer accessibility when a screen reader runs: $output"
+
+    output="$(env -i PATH="$at_stub_dir/none:$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=wayland-gpu "$launcher_probe" probe --safe-mode)"
     [[ "$output" == *"mode=wayland-gpu"* && "$output" == *"ozone_platform=x11"* && "$output" == *"gpu=0"* ]] || fail "safe-mode must override wayland-gpu to X11 software rendering: $output"
-    [[ "$output" == *"renderer_accessibility=1"* && "$output" == *"<--force-renderer-accessibility>"* ]] || fail "wayland-gpu with safe-mode must keep X11 renderer accessibility default: $output"
+    [[ "$output" == *"renderer_accessibility=0"* && "$output" != *"<--force-renderer-accessibility>"* ]] || fail "wayland-gpu with safe-mode must fall back to assistive-technology detection: $output"
 
-    output="$(env -i PATH="$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=wayland-gpu "$launcher_probe" probe -- --ozone-platform=x11)"
+    output="$(env -i PATH="$at_stub_dir/none:$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=wayland-gpu "$launcher_probe" probe -- --ozone-platform=x11)"
     [[ "$output" == *"electron=<--ozone-platform=x11>"* && "$output" != *"<--ozone-platform-hint=auto>"* ]] || fail "pass-through X11 platform must override wayland-gpu hinting: $output"
-    [[ "$output" == *"renderer_accessibility=1"* && "$output" == *"<--force-renderer-accessibility>"* ]] || fail "wayland-gpu with pass-through X11 platform must keep X11 renderer accessibility default: $output"
+    [[ "$output" == *"renderer_accessibility=0"* && "$output" != *"<--force-renderer-accessibility>"* ]] || fail "wayland-gpu with pass-through X11 platform must fall back to assistive-technology detection: $output"
 
     output="$(env -i PATH="$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=wslg "$launcher_probe" probe)"
     [[ "$output" == *"mode=wslg"* && "$output" == *"comp=0"* && "$output" == *"gl_added=1"* ]] || fail "forced WSLg profile must keep GPU compositing enabled and add ANGLE: $output"
@@ -3808,6 +4364,43 @@ EOF
 
     output="$(env -i PATH="$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=default CODEX_FORCE_RENDERER_ACCESSIBILITY=0 "$launcher_probe" probe)"
     [[ "$output" == *"renderer_accessibility=0"* && "$output" != *"<--force-renderer-accessibility>"* ]] || fail "CODEX_FORCE_RENDERER_ACCESSIBILITY=0 must disable renderer accessibility under default Linux: $output"
+
+    output="$(env -i PATH="$at_stub_dir/orca:$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=default "$launcher_probe" probe)"
+    [[ "$output" == *"renderer_accessibility=1"* && "$output" == *"<--force-renderer-accessibility>"* ]] || fail "a running screen reader must force renderer accessibility under default Linux: $output"
+
+    output="$(env -i PATH="$at_stub_dir/screenreader:$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=default "$launcher_probe" probe)"
+    [[ "$output" == *"renderer_accessibility=1"* && "$output" == *"<--force-renderer-accessibility>"* ]] || fail "the GNOME screen-reader setting must force renderer accessibility under default Linux: $output"
+
+    output="$(env -i PATH="$at_stub_dir/none:$PATH" HOME="$HOME" GNOME_ACCESSIBILITY=1 CODEX_LINUX_RENDERING_MODE=default "$launcher_probe" probe)"
+    [[ "$output" == *"renderer_accessibility=1"* && "$output" == *"<--force-renderer-accessibility>"* ]] || fail "GNOME_ACCESSIBILITY=1 must force renderer accessibility under default Linux: $output"
+
+    output="$(env -i PATH="$at_stub_dir/none:$PATH" HOME="$HOME" QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1 CODEX_LINUX_RENDERING_MODE=default "$launcher_probe" probe)"
+    [[ "$output" == *"renderer_accessibility=1"* && "$output" == *"<--force-renderer-accessibility>"* ]] || fail "QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1 must force renderer accessibility under default Linux: $output"
+
+    output="$(env -i PATH="$at_stub_dir/none:$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=default CODEX_FORCE_RENDERER_ACCESSIBILITY=1 "$launcher_probe" probe)"
+    [[ "$output" == *"renderer_accessibility=1"* && "$output" == *"<--force-renderer-accessibility>"* ]] || fail "CODEX_FORCE_RENDERER_ACCESSIBILITY=1 must force renderer accessibility without detected assistive technology: $output"
+
+    output="$(env -i PATH="$at_stub_dir/toolkit:$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=default "$launcher_probe" probe)"
+    [[ "$output" == *"renderer_accessibility=1"* && "$output" == *"<--force-renderer-accessibility>"* ]] || fail "toolkit-accessibility=true (Computer Use gsettings fallback) must force renderer accessibility: $output"
+
+    output="$(env -i PATH="$at_stub_dir/atspibus:$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=default "$launcher_probe" probe)"
+    [[ "$output" == *"renderer_accessibility=1"* && "$output" == *"<--force-renderer-accessibility>"* ]] || fail "org.a11y.Status IsEnabled (Computer Use setup) must force renderer accessibility: $output"
+
+    local at_probe_start_ns at_probe_end_ns at_probe_elapsed_ms slowbus_pid slowbus_pid_file
+    slowbus_pid_file="$TMP_DIR/slowbus-gsettings.pid"
+    rm -f "$slowbus_pid_file"
+    at_probe_start_ns="$(date +%s%N)"
+    output="$(env -i PATH="$at_stub_dir/slowbus:$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=default CODEX_TEST_SLOWBUS_PID_FILE="$slowbus_pid_file" "$launcher_probe" probe)"
+    at_probe_end_ns="$(date +%s%N)"
+    at_probe_elapsed_ms=$(( (10#$at_probe_end_ns - 10#$at_probe_start_ns) / 1000000 ))
+    [[ "$output" == *"renderer_accessibility=0"* && "$output" != *"<--force-renderer-accessibility>"* ]] || fail "a hung session bus must not force renderer accessibility: $output"
+    [ "$at_probe_elapsed_ms" -lt 3000 ] || fail "session-bus assistive-tech probe must be watchdog-capped, took ${at_probe_elapsed_ms}ms: $output"
+    [ -s "$slowbus_pid_file" ] || fail "hung session-bus probe did not start the gsettings helper"
+    slowbus_pid="$(< "$slowbus_pid_file")"
+    if kill -0 "$slowbus_pid" 2>/dev/null; then
+        kill -KILL "$slowbus_pid" 2>/dev/null || true
+        fail "session-bus assistive-tech watchdog leaked hung gsettings pid $slowbus_pid"
+    fi
 
     output="$(env -i PATH="$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=wslg "$launcher_probe" probe --wayland --use-gl=desktop)"
     [[ "$output" == *"<--ozone-platform=wayland>"* && "$output" == *"electron=<--use-gl=desktop>"* ]] || fail "explicit rendering args must override WSLg defaults: $output"
@@ -3828,6 +4421,142 @@ EOF
 
     output="$(env -i PATH="$PATH" HOME="$HOME" WSL_INTEROP=/tmp/codex-wsl WAYLAND_DISPLAY=wayland-0 "$launcher_probe" probe)"
     [[ "$output" == *"mode=wslg"* && "$output" == *"wslg=1"* ]] || fail "auto rendering mode must detect WSLg from WSL and GUI markers: $output"
+
+    local dev_shm_stub_dir="$TMP_DIR/dev-shm-stubs"
+    mkdir -p "$dev_shm_stub_dir/large" "$dev_shm_stub_dir/small" "$dev_shm_stub_dir/broken"
+    cat > "$dev_shm_stub_dir/large/df" <<'EOF'
+#!/usr/bin/env bash
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
+printf 'tmpfs 16000000 0 16000000 0%% /dev/shm\n'
+EOF
+    cat > "$dev_shm_stub_dir/small/df" <<'EOF'
+#!/usr/bin/env bash
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
+printf 'tmpfs 65536 0 65536 0%% /dev/shm\n'
+EOF
+    cat > "$dev_shm_stub_dir/broken/df" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+    chmod +x "$dev_shm_stub_dir/large/df" "$dev_shm_stub_dir/small/df" "$dev_shm_stub_dir/broken/df"
+
+    output="$(env -i PATH="$dev_shm_stub_dir/large:$PATH" HOME="$HOME" "$launcher_probe" probe)"
+    [[ "$output" != *"<--disable-dev-shm-usage>"* ]] || fail "adequate /dev/shm must not disable Chromium /dev/shm usage: $output"
+
+    output="$(env -i PATH="$dev_shm_stub_dir/small:$PATH" HOME="$HOME" "$launcher_probe" probe)"
+    [[ "$output" == *"<--disable-dev-shm-usage>"* ]] || fail "small /dev/shm must keep --disable-dev-shm-usage: $output"
+
+    output="$(env -i PATH="$dev_shm_stub_dir/broken:$PATH" HOME="$HOME" "$launcher_probe" probe)"
+    [[ "$output" == *"<--disable-dev-shm-usage>"* ]] || fail "unreadable /dev/shm capacity must keep --disable-dev-shm-usage: $output"
+
+    output="$(env -i PATH="$dev_shm_stub_dir/large:$PATH" HOME="$HOME" CODEX_ELECTRON_DISABLE_DEV_SHM_USAGE=1 "$launcher_probe" probe)"
+    [[ "$output" == *"<--disable-dev-shm-usage>"* ]] || fail "CODEX_ELECTRON_DISABLE_DEV_SHM_USAGE=1 must force --disable-dev-shm-usage: $output"
+
+    output="$(env -i PATH="$dev_shm_stub_dir/small:$PATH" HOME="$HOME" CODEX_ELECTRON_DISABLE_DEV_SHM_USAGE=0 "$launcher_probe" probe)"
+    [[ "$output" != *"<--disable-dev-shm-usage>"* ]] || fail "CODEX_ELECTRON_DISABLE_DEV_SHM_USAGE=0 must suppress --disable-dev-shm-usage: $output"
+
+    output="$(env -i PATH="$dev_shm_stub_dir/small:$PATH" HOME="$HOME" CODEX_ELECTRON_DISABLE_DEV_SHM_USAGE=bogus "$launcher_probe" probe 2>/dev/null)"
+    [[ "$output" == *"<--disable-dev-shm-usage>"* ]] || fail "invalid CODEX_ELECTRON_DISABLE_DEV_SHM_USAGE must fall back to /dev/shm detection: $output"
+    output="$(env -i PATH="$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=default CODEX_OZONE_PLATFORM=x11 "$launcher_probe" probe)"
+    [[ "$output" == *"<--ozone-platform=x11>"* && "$output" != *"<--ozone-platform-hint=auto>"* ]] || fail "CODEX_OZONE_PLATFORM=x11 must select the X11 Ozone backend: $output"
+
+    output="$(env -i PATH="$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=default CODEX_OZONE_PLATFORM=wayland "$launcher_probe" probe)"
+    [[ "$output" == *"<--ozone-platform=wayland>"* && "$output" == *"WaylandWindowDecorations"* ]] || fail "CODEX_OZONE_PLATFORM=wayland must select native Wayland with decorations: $output"
+
+    output="$(env -i PATH="$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=default CODEX_OZONE_PLATFORM=auto SOMMELIER_VERSION=1 "$launcher_probe" probe)"
+    [[ "$output" == *"<--ozone-platform-hint=auto>"* && "$output" != *"<--ozone-platform=x11>"* ]] || fail "CODEX_OZONE_PLATFORM=auto must override the Sommelier X11 fallback: $output"
+
+    output="$(env -i PATH="$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=default CODEX_OZONE_PLATFORM=wayland "$launcher_probe" probe --x11)"
+    [[ "$output" == *"<--ozone-platform=x11>"* && "$output" != *"<--ozone-platform=wayland>"* ]] || fail "explicit --x11 must win over CODEX_OZONE_PLATFORM: $output"
+
+    output="$(env -i PATH="$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=default CODEX_OZONE_PLATFORM=bogus "$launcher_probe" probe 2>/dev/null)"
+    [[ "$output" == *"<--ozone-platform-hint=auto>"* ]] || fail "invalid CODEX_OZONE_PLATFORM must fall back to the default ozone hint: $output"
+
+    output="$(env -i PATH="$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=default CODEX_FORCE_DEVICE_SCALE_FACTOR=1 "$launcher_probe" probe)"
+    [[ "$output" == *"<--force-device-scale-factor=1>"* ]] || fail "CODEX_FORCE_DEVICE_SCALE_FACTOR=1 must pass the scale flag to Electron: $output"
+
+    output="$(env -i PATH="$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=default CODEX_FORCE_DEVICE_SCALE_FACTOR=1.25 "$launcher_probe" probe)"
+    [[ "$output" == *"<--force-device-scale-factor=1.25>"* ]] || fail "fractional CODEX_FORCE_DEVICE_SCALE_FACTOR must pass through: $output"
+
+    output="$(env -i PATH="$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=default CODEX_FORCE_DEVICE_SCALE_FACTOR=abc "$launcher_probe" probe 2>/dev/null)"
+    [[ "$output" != *"--force-device-scale-factor"* ]] || fail "invalid CODEX_FORCE_DEVICE_SCALE_FACTOR must be ignored: $output"
+
+    output="$(env -i PATH="$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=default CODEX_FORCE_DEVICE_SCALE_FACTOR=0 "$launcher_probe" probe 2>/dev/null)"
+    [[ "$output" != *"--force-device-scale-factor"* ]] || fail "zero CODEX_FORCE_DEVICE_SCALE_FACTOR must be ignored: $output"
+
+    output="$(env -i PATH="$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=default CODEX_FORCE_DEVICE_SCALE_FACTOR=1 "$launcher_probe" probe -- --force-device-scale-factor=2)"
+    [[ "$output" == *"electron=<--force-device-scale-factor=2>"* && "$output" != *"<--force-device-scale-factor=1>"* ]] || fail "explicit --force-device-scale-factor must win over the env override: $output"
+
+    # Feature launcher hooks run after set_electron_defaults() has already chosen
+    # the Ozone platform, so a hook-supplied explicit --ozone-platform must drop
+    # the launcher-computed value instead of leaving both in the final argv. This
+    # must hold no matter how the launcher picked the platform: CODEX_OZONE_PLATFORM,
+    # the CODEX_LINUX_RENDERING_MODE profile (wayland-gpu / wslg), or the Sommelier
+    # fallback.
+    local hook_force_x11_dir="$TMP_DIR/hook-force-x11"
+    mkdir -p "$hook_force_x11_dir"
+    printf '%s\n' '#!/usr/bin/env bash' "printf '%s\\n' 'electron-arg --ozone-platform=x11'" > "$hook_force_x11_dir/force-x11"
+    chmod +x "$hook_force_x11_dir/force-x11"
+    local hook_force_wayland_dir="$TMP_DIR/hook-force-wayland"
+    mkdir -p "$hook_force_wayland_dir"
+    printf '%s\n' '#!/usr/bin/env bash' "printf '%s\\n' 'electron-arg --ozone-platform=wayland'" > "$hook_force_wayland_dir/force-wayland"
+    chmod +x "$hook_force_wayland_dir/force-wayland"
+
+    output="$(env -i PATH="$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=default FEATURE_LAUNCHER_HOOK_DIR="$hook_force_x11_dir" CODEX_OZONE_PLATFORM=wayland "$launcher_probe" probe)"
+    [[ "$output" == *"electron=<--ozone-platform=x11>"* ]] || fail "launcher hook --ozone-platform must reach Electron over CODEX_OZONE_PLATFORM: $output"
+    [[ "$output" != *"<--ozone-platform=wayland>"* ]] || fail "env-derived --ozone-platform must be dropped when a launcher hook overrides it: $output"
+    [[ "$output" != *"WaylandWindowDecorations"* ]] || fail "cleared env Wayland platform must not still add Wayland decorations: $output"
+
+    output="$(env -i PATH="$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=wayland-gpu FEATURE_LAUNCHER_HOOK_DIR="$hook_force_x11_dir" "$launcher_probe" probe)"
+    [[ "$output" == *"electron=<--ozone-platform=x11>"* ]] || fail "launcher hook --ozone-platform must reach Electron under wayland-gpu: $output"
+    [[ "$output" != *"<--ozone-platform=wayland>"* ]] || fail "wayland-gpu launcher platform must be dropped when a hook overrides it: $output"
+    [[ "$output" != *"WaylandWindowDecorations"* ]] || fail "dropped wayland-gpu platform must not still add Wayland decorations: $output"
+
+    output="$(env -i PATH="$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=wslg FEATURE_LAUNCHER_HOOK_DIR="$hook_force_wayland_dir" "$launcher_probe" probe)"
+    [[ "$output" == *"<--ozone-platform=wayland>"* ]] || fail "launcher hook --ozone-platform must reach Electron under wslg: $output"
+    [[ "$output" != *"<--ozone-platform=x11>"* ]] || fail "wslg launcher platform must be dropped when a hook overrides it: $output"
+
+    output="$(env -i PATH="$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=default SOMMELIER_VERSION=1 FEATURE_LAUNCHER_HOOK_DIR="$hook_force_wayland_dir" "$launcher_probe" probe)"
+    [[ "$output" == *"<--ozone-platform=wayland>"* ]] || fail "launcher hook --ozone-platform must reach Electron over the Sommelier fallback: $output"
+    [[ "$output" != *"<--ozone-platform=x11>"* ]] || fail "Sommelier X11 fallback must be dropped when a hook overrides it: $output"
+
+    local hook_scale_dir="$TMP_DIR/hook-scale-override"
+    mkdir -p "$hook_scale_dir"
+    printf '%s\n' '#!/usr/bin/env bash' "printf '%s\\n' 'electron-arg --force-device-scale-factor=2'" > "$hook_scale_dir/force-scale2"
+    chmod +x "$hook_scale_dir/force-scale2"
+    output="$(env -i PATH="$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=default FEATURE_LAUNCHER_HOOK_DIR="$hook_scale_dir" CODEX_FORCE_DEVICE_SCALE_FACTOR=1 "$launcher_probe" probe)"
+    [[ "$output" == *"electron=<--force-device-scale-factor=2>"* ]] || fail "launcher hook --force-device-scale-factor must reach Electron over CODEX_FORCE_DEVICE_SCALE_FACTOR: $output"
+    [[ "$output" != *"<--force-device-scale-factor=1>"* ]] || fail "env-derived --force-device-scale-factor must be dropped when a launcher hook overrides it: $output"
+
+    # A hook-emitted arg must also replace a conflicting arg already collected in
+    # ELECTRON_ARGS (pass-through CLI, persistent flags file, or feature
+    # electron-args) instead of appending a duplicate switch to the final argv.
+    output="$(env -i PATH="$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=default FEATURE_LAUNCHER_HOOK_DIR="$hook_force_wayland_dir" "$launcher_probe" probe -- --ozone-platform=x11)"
+    [[ "$output" == *"electron=<--ozone-platform=wayland>"* ]] || fail "launcher hook --ozone-platform must replace a pass-through ozone arg: $output"
+    [[ "$output" != *"<--ozone-platform=x11>"* ]] || fail "pass-through --ozone-platform must be dropped when a launcher hook supersedes it: $output"
+
+    output="$(env -i PATH="$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=default FEATURE_LAUNCHER_HOOK_DIR="$hook_force_wayland_dir" "$launcher_probe" probe -- --ozone-platform-hint=auto)"
+    [[ "$output" == *"electron=<--ozone-platform=wayland>"* ]] || fail "launcher hook --ozone-platform must replace a pass-through ozone hint: $output"
+    [[ "$output" != *"<--ozone-platform-hint=auto>"* ]] || fail "pass-through --ozone-platform-hint must be dropped when a hook supplies an explicit platform: $output"
+
+    output="$(env -i PATH="$PATH" HOME="$HOME" CODEX_LINUX_RENDERING_MODE=default FEATURE_LAUNCHER_HOOK_DIR="$hook_scale_dir" "$launcher_probe" probe -- --force-device-scale-factor=1)"
+    [[ "$output" == *"electron=<--force-device-scale-factor=2>"* ]] || fail "launcher hook scale arg must replace a pass-through scale arg: $output"
+    [[ "$output" != *"<--force-device-scale-factor=1>"* ]] || fail "pass-through --force-device-scale-factor must be dropped when a launcher hook supersedes it: $output"
+
+    local hook_scale_flags_dir="$TMP_DIR/hook-scale-user-flags"
+    local hook_scale_flags_file="$hook_scale_flags_dir/electron-flags.conf"
+    mkdir -p "$hook_scale_flags_dir"
+    printf '%s\n' '--force-device-scale-factor=1' > "$hook_scale_flags_file"
+    output="$(env -i PATH="$PATH" HOME="$HOME" APP_CONFIG_DIR="$hook_scale_flags_dir" USER_ELECTRON_FLAGS_FILE="$hook_scale_flags_file" CODEX_LINUX_RENDERING_MODE=default FEATURE_LAUNCHER_HOOK_DIR="$hook_scale_dir" "$launcher_probe" probe)"
+    [[ "$output" == *"electron=<--force-device-scale-factor=2>"* ]] || fail "launcher hook scale arg must replace a persistent-flags scale arg: $output"
+    [[ "$output" != *"<--force-device-scale-factor=1>"* ]] || fail "persistent-flags --force-device-scale-factor must be dropped when a launcher hook supersedes it: $output"
+
+    local hook_scale_feature_args_dir="$TMP_DIR/hook-scale-feature-args"
+    mkdir -p "$hook_scale_feature_args_dir"
+    printf '%s\n' '--force-device-scale-factor=1' > "$hook_scale_feature_args_dir/feature"
+    output="$(env -i PATH="$PATH" HOME="$HOME" FEATURE_ELECTRON_ARGS_DIR="$hook_scale_feature_args_dir" CODEX_LINUX_RENDERING_MODE=default FEATURE_LAUNCHER_HOOK_DIR="$hook_scale_dir" "$launcher_probe" probe)"
+    [[ "$output" == *"electron=<--force-device-scale-factor=2>"* ]] || fail "launcher hook scale arg must replace a feature electron-args scale arg: $output"
+    [[ "$output" != *"<--force-device-scale-factor=1>"* ]] || fail "feature electron-args --force-device-scale-factor must be dropped when a launcher hook supersedes it: $output"
 
     assert_contains "$REPO_DIR/launcher/start.sh.template" "warm_start_ipc_sent"
     assert_contains "$REPO_DIR/launcher/start.sh.template" "launcher_phase"
@@ -3858,8 +4587,16 @@ EOF
     assert_contains "$REPO_DIR/launcher/start.sh.template" "CODEX_LINUX_RENDERING_MODE=auto|default|wslg|wayland-gpu"
     assert_contains "$REPO_DIR/launcher/start.sh.template" '--ozone-platform-hint="$ELECTRON_OZONE_HINT"'
     assert_contains "$REPO_DIR/launcher/start.sh.template" "--disable-gpu-sandbox"
+    assert_contains "$REPO_DIR/launcher/start.sh.template" "CODEX_ELECTRON_DISABLE_DEV_SHM_USAGE=auto|0|1"
+    assert_contains "$REPO_DIR/launcher/start.sh.template" "dev_shm_usage_disabled="
     assert_contains "$REPO_DIR/launcher/start.sh.template" "--force-renderer-accessibility"
     assert_contains "$REPO_DIR/launcher/start.sh.template" "CODEX_FORCE_RENDERER_ACCESSIBILITY=auto|0|1"
+    assert_contains "$REPO_DIR/launcher/start.sh.template" "assistive_technology_detected"
+    assert_contains "$REPO_DIR/launcher/start.sh.template" "session_bus_probe_command"
+    assert_contains "$REPO_DIR/launcher/start.sh.template" "CODEX_OZONE_PLATFORM=x11|wayland|auto"
+    assert_contains "$REPO_DIR/launcher/start.sh.template" "CODEX_FORCE_DEVICE_SCALE_FACTOR=N"
+    assert_contains "$REPO_DIR/launcher/start.sh.template" "print_scaling_diagnostics"
+    assert_contains "$REPO_DIR/launcher/start.sh.template" "--diagnose-scaling"
     assert_contains "$REPO_DIR/launcher/start.sh.template" "PACKAGED_RUNTIME_HELPER"
     assert_contains "$REPO_DIR/launcher/start.sh.template" "--allow-install-missing"
     assert_contains "$REPO_DIR/scripts/lib/process-detection.sh" "CODEX_INSTALL_ALLOW_RUNNING"
@@ -3921,16 +4658,18 @@ EOF
     assert_not_contains "$REPO_DIR/packaging/linux/codex-desktop.spec" "Requires:.*npm"
     assert_not_contains "$REPO_DIR/packaging/linux/PKGBUILD.template" "'nodejs>=20'"
     assert_contains "$REPO_DIR/packaging/linux/PKGBUILD.template" "optional override for the bundled managed Node.js runtime"
-    assert_contains "$REPO_DIR/scripts/lib/node-runtime.sh" "MANAGED_NODE_VERSION"
-    assert_contains "$REPO_DIR/scripts/lib/package-common.sh" "node-runtime"
-    assert_contains "$REPO_DIR/tests/fixtures/create-packaged-app-fixture.sh" "resources/node-runtime/bin"
-    assert_contains "$REPO_DIR/.github/workflows/ci.yml" "./scripts/ci-local.sh upstream-deb"
-    assert_contains "$REPO_DIR/.github/workflows/ci.yml" "./scripts/ci-local.sh upstream-rpm"
-    assert_contains "$REPO_DIR/.github/workflows/ci.yml" "./scripts/ci-local.sh upstream-pacman"
-    assert_contains "$REPO_DIR/.github/workflows/ci.yml" "for file in scripts/patches/"
-    assert_contains "$REPO_DIR/scripts/ci/container-entrypoint.sh" "tests/fixtures/create-packaged-app-fixture.sh codex-app"
-    assert_contains "$REPO_DIR/scripts/ci/container-entrypoint.sh" "for file in scripts/patches/"
-    assert_contains "$REPO_DIR/flake.nix" "rewriteCratesIoDownloadUrl"
+assert_contains "$REPO_DIR/scripts/lib/node-runtime.sh" "MANAGED_NODE_VERSION"
+assert_contains "$REPO_DIR/scripts/lib/package-common.sh" "node-runtime"
+assert_contains "$REPO_DIR/tests/fixtures/create-packaged-app-fixture.sh" "resources/node-runtime/bin"
+assert_contains "$REPO_DIR/.github/workflows/ci.yml" "./scripts/ci-local.sh upstream-deb"
+assert_contains "$REPO_DIR/.github/workflows/ci.yml" "./scripts/ci-local.sh upstream-rpm"
+assert_contains "$REPO_DIR/.github/workflows/ci.yml" "./scripts/ci-local.sh upstream-pacman"
+assert_contains "$REPO_DIR/scripts/ci/container-entrypoint.sh" "tests/fixtures/create-packaged-app-fixture.sh codex-app"
+assert_contains "$REPO_DIR/.github/workflows/ci.yml" "bash scripts/ci/run-node-checks.sh"
+assert_contains "$REPO_DIR/scripts/ci/container-entrypoint.sh" "bash scripts/ci/run-node-checks.sh"
+assert_contains "$REPO_DIR/scripts/ci/run-node-checks.sh" "git ls-files '\\*.js'"
+assert_contains "$REPO_DIR/scripts/ci/run-node-checks.sh" "git ls-files '\\*.test.js' 'linux-features/\\*/test.js'"
+assert_contains "$REPO_DIR/flake.nix" "rewriteCratesIoDownloadUrl"
     assert_contains "$REPO_DIR/flake.nix" "https://static.crates.io/crates/"
     assert_contains "$REPO_DIR/flake.nix" "api/v1/crates/"
     assert_contains "$REPO_DIR/launcher/start.sh.template" "MANAGED_NODE_BIN_DIR"
@@ -4002,6 +4741,268 @@ if (!launcher.includes('ln -sfnT "$target" "$link_path"')) {
   throw new Error("replace_symlink must replace plugin links as paths, not as directory children");
 }
 NODE
+}
+
+test_launcher_cli_resolution_policy() {
+    info "Checking launcher CLI resolution policy"
+    local launcher_probe="$TMP_DIR/launcher-cli-policy-probe.sh"
+    python3 - "$REPO_DIR/launcher/start.sh.template" "$launcher_probe" <<'PY'
+import pathlib
+import re
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+functions = []
+for name in ("find_codex_cli", "pid_parent_matches", "codex_cli_version_probe", "codex_cli_version", "log_codex_cli_path"):
+    match = re.search(r"^" + re.escape(name) + r"\(\) \{[\s\S]*?^\}\n", source, re.M)
+    if match is None:
+        raise SystemExit(f"missing {name}")
+    functions.append(match.group(0))
+
+pathlib.Path(sys.argv[2]).write_text(
+    "#!/usr/bin/env bash\n"
+    "set -Eeuo pipefail\n\n"
+    + "\n".join(functions)
+    + r'''
+case "${1:?}" in
+    find)
+        find_codex_cli
+        ;;
+    version)
+        codex_cli_version "$2"
+        ;;
+    log)
+        CODEX_CLI_PATH="${2:-}"
+        export CODEX_CLI_PATH
+        log_codex_cli_path
+        ;;
+    *)
+        exit 64
+        ;;
+esac
+''',
+    encoding="utf-8",
+)
+PY
+    chmod +x "$launcher_probe"
+
+    local workspace="$TMP_DIR/launcher-cli-policy"
+    local fake_home="$workspace/home"
+    local path_cli_bin="$workspace/path-cli-bin"
+    local selected_cli
+    mkdir -p "$path_cli_bin" "$fake_home/.npm-global/bin"
+
+    printf '#!/usr/bin/env bash\nprintf "codex-cli 0.120.0\\n"\n' > "$path_cli_bin/codex"
+    printf '#!/usr/bin/env bash\nprintf "codex-cli 9.999.0\\n"\n' > "$fake_home/.npm-global/bin/codex"
+    chmod +x "$path_cli_bin/codex" "$fake_home/.npm-global/bin/codex"
+
+    selected_cli="$(env -i PATH="$path_cli_bin:/usr/bin:/bin" HOME="$fake_home" "$launcher_probe" find)"
+    [ "$selected_cli" = "$path_cli_bin/codex" ] || fail "CLI lookup must keep the first PATH hit, got $selected_cli"
+
+    local override_cli="$workspace/override-codex"
+    local log_output
+    printf '#!/usr/bin/env bash\nprintf "codex-cli 0.42.0\\n"\n' > "$override_cli"
+    chmod +x "$override_cli"
+    log_output="$(env -i PATH="$path_cli_bin:/usr/bin:/bin" HOME="$fake_home" "$launcher_probe" log "$override_cli")"
+    [[ "$log_output" == "Using CODEX_CLI_PATH=$override_cli (version 0.42.0)" ]] || fail "CODEX_CLI_PATH must remain an explicit override with version logging: $log_output"
+
+    local dash_version_cli="$workspace/dash-version-codex"
+    local fallback_version_cli="$workspace/fallback-version-codex"
+    local version_output
+    printf '#!/usr/bin/env bash\n[ "${1:-}" = "--version" ] || exit 2\nprintf "codex-cli 0.150.0\\n"\n' > "$dash_version_cli"
+    printf '#!/usr/bin/env bash\nif [ "${1:-}" = "--version" ]; then exit 2; fi\n[ "${1:-}" = "version" ] || exit 2\nprintf "codex-cli v0.151.0\\n"\n' > "$fallback_version_cli"
+    chmod +x "$dash_version_cli" "$fallback_version_cli"
+
+    version_output="$(env -i PATH="/usr/bin:/bin" HOME="$fake_home" "$launcher_probe" version "$dash_version_cli")"
+    [ "$version_output" = "0.150.0" ] || fail "CLI version probe must read --version output, got $version_output"
+    version_output="$(env -i PATH="/usr/bin:/bin" HOME="$fake_home" "$launcher_probe" version "$fallback_version_cli")"
+    [ "$version_output" = "0.151.0" ] || fail "CLI version probe must fall back to version output, got $version_output"
+
+    # The version probe result is read through command substitution on the
+    # launch path. The watchdog subshell (and its sleep child) must not
+    # inherit that pipe, or a fast CLI still blocks the caller for the full
+    # watchdog second waiting for pipe EOF.
+    local fast_probe_start_ns fast_probe_end_ns fast_probe_elapsed_ms
+    fast_probe_start_ns="$(date +%s%N)"
+    version_output="$(env -i PATH="/usr/bin:/bin" HOME="$fake_home" "$launcher_probe" version "$dash_version_cli")"
+    fast_probe_end_ns="$(date +%s%N)"
+    fast_probe_elapsed_ms=$(( (10#$fast_probe_end_ns - 10#$fast_probe_start_ns) / 1000000 ))
+    [ "$version_output" = "0.150.0" ] || fail "fast CLI version probe must still parse --version output, got $version_output"
+    [ "$fast_probe_elapsed_ms" -lt 700 ] || fail "CLI version probe must not hold the command-substitution pipe until the watchdog sleep expires, took ${fast_probe_elapsed_ms}ms"
+
+    local unknown_cli="$workspace/unknown-version-codex"
+    printf '#!/usr/bin/env bash\nprintf "codex-cli dev build\\n"\n' > "$unknown_cli"
+    chmod +x "$unknown_cli"
+    log_output="$(env -i PATH="/usr/bin:/bin" HOME="$fake_home" "$launcher_probe" log "$unknown_cli")"
+    [[ "$log_output" == "Using CODEX_CLI_PATH=$unknown_cli (version unknown; set CODEX_CLI_PATH=/path/to/codex to pin a known CLI)" ]] || fail "CLI diagnostics must explain unknown versions and explicit pinning: $log_output"
+
+    local fd_probe_cli="$workspace/fd-probe-codex"
+    local fd_state="$workspace/fd9.state"
+    {
+        printf '#!/usr/bin/env bash\n'
+        printf 'if { true >&9; } 2>/dev/null; then printf "open\\n" > %q; else printf "closed\\n" > %q; fi\n' "$fd_state" "$fd_state"
+        printf 'printf "codex-cli 0.200.0\\n"\n'
+    } > "$fd_probe_cli"
+    chmod +x "$fd_probe_cli"
+    version_output="$(
+        exec 9>"$workspace/launcher.lock"
+        env -i PATH="/usr/bin:/bin" HOME="$fake_home" "$launcher_probe" version "$fd_probe_cli"
+    )"
+    [ "$version_output" = "0.200.0" ] || fail "fd-guarded CLI probe must still read versions, got $version_output"
+    [ "$(cat "$fd_state")" = "closed" ] || fail "CLI version probe child must not inherit launcher lock fd 9"
+
+    local hanging_cli="$workspace/hanging-codex"
+    local hanging_pid_file="$workspace/hanging.pid"
+    {
+        printf '#!/usr/bin/env bash\n'
+        printf 'printf "%%s\\n" "$$" > %q\n' "$hanging_pid_file"
+        printf 'printf "codex-cli 9.999.0\\n"\n'
+        printf 'exec sleep 30\n'
+    } > "$hanging_cli"
+    chmod +x "$hanging_cli"
+
+    version_output="$(env -i PATH="/usr/bin:/bin" HOME="$fake_home" TMPDIR="$workspace" "$launcher_probe" version "$hanging_cli" || true)"
+    [ -z "$version_output" ] || fail "hanging CLI probe must ignore partial version output, got $version_output"
+    assert_file_exists "$hanging_pid_file"
+    local hanging_pid
+    hanging_pid="$(cat "$hanging_pid_file")"
+    if kill -0 "$hanging_pid" 2>/dev/null; then
+        sleep 0.1
+    fi
+    if kill -0 "$hanging_pid" 2>/dev/null; then
+        kill -9 "$hanging_pid" 2>/dev/null || true
+        fail "hanging CLI probe left process $hanging_pid alive"
+    fi
+
+    local hanging_log_cli="$workspace/hanging-log-codex"
+    local hanging_log_pid_file="$workspace/hanging-log.pid"
+    {
+        printf '#!/usr/bin/env bash\n'
+        printf 'printf "%%s\\n" "$$" > %q\n' "$hanging_log_pid_file"
+        printf 'printf "codex-cli 9.999.0\\n"\n'
+        printf 'exec sleep 2\n'
+    } > "$hanging_log_cli"
+    chmod +x "$hanging_log_cli"
+
+    log_output="$(env -i PATH="/usr/bin:/bin" HOME="$fake_home" TMPDIR="$workspace" "$launcher_probe" log "$hanging_log_cli")"
+    [[ "$log_output" == "Using CODEX_CLI_PATH=$hanging_log_cli (version unknown; set CODEX_CLI_PATH=/path/to/codex to pin a known CLI)" ]] || fail "log path must time out hung CLI version probes under command substitution: $log_output"
+    assert_file_exists "$hanging_log_pid_file"
+    local hanging_log_pid
+    hanging_log_pid="$(cat "$hanging_log_pid_file")"
+    if kill -0 "$hanging_log_pid" 2>/dev/null; then
+        sleep 0.1
+    fi
+    if kill -0 "$hanging_log_pid" 2>/dev/null; then
+        kill -9 "$hanging_log_pid" 2>/dev/null || true
+        fail "hanging CLI log probe left process $hanging_log_pid alive"
+    fi
+}
+
+test_webview_server_cache_policy() {
+    info "Checking webview server cache policy"
+    python3 - "$REPO_DIR/launcher/webview-server.py" <<'PY'
+import http.client
+import os
+import pathlib
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+
+server_path = pathlib.Path(sys.argv[1])
+workspace = pathlib.Path(tempfile.mkdtemp(prefix="codex-webview-cache-policy-"))
+proc = None
+
+try:
+    (workspace / "assets").mkdir()
+    (workspace / "apps").mkdir()
+    (workspace / "index.html").write_text("<!doctype html><title>Codex</title>", encoding="utf8")
+    (workspace / "assets" / "app-test-abc123.js").write_text("export default 1;\n", encoding="utf8")
+    (workspace / "apps" / "icon.png").write_bytes(b"png")
+    fixed_mtime = 1_700_000_000
+    for path in workspace.rglob("*"):
+        if path.is_file():
+            os.utime(path, (fixed_mtime, fixed_mtime))
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+
+    proc = subprocess.Popen(
+        [sys.executable, str(server_path), str(port), "--bind", "127.0.0.1"],
+        cwd=workspace,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+
+    deadline = time.time() + 5
+    while True:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                break
+        except OSError:
+            if proc.poll() is not None:
+                raise AssertionError(f"webview server exited early with {proc.returncode}")
+            if time.time() > deadline:
+                raise AssertionError("webview server did not start")
+            time.sleep(0.05)
+
+    def request(method, path, headers=None):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request(method, path, headers=headers or {})
+        response = conn.getresponse()
+        body = response.read()
+        result = (response.status, {k.lower(): v for k, v in response.getheaders()}, body)
+        conn.close()
+        return result
+
+    index_status, index_headers, _ = request("HEAD", "/index.html")
+    assert index_status == 200, index_status
+    assert index_headers.get("cache-control") == "no-store, max-age=0", index_headers
+    assert index_headers.get("pragma") == "no-cache", index_headers
+    assert index_headers.get("expires") == "0", index_headers
+
+    asset_status, asset_headers, _ = request("HEAD", "/assets/app-test-abc123.js")
+    assert asset_status == 200, asset_status
+    assert asset_headers.get("cache-control") == "no-store, max-age=0", asset_headers
+    assert asset_headers.get("pragma") == "no-cache", asset_headers
+    assert asset_headers.get("expires") == "0", asset_headers
+
+    cached_status, cached_headers, _ = request(
+        "GET",
+        "/assets/app-test-abc123.js",
+        {"If-Modified-Since": asset_headers["last-modified"]},
+    )
+    assert cached_status == 200, (cached_status, cached_headers)
+    assert cached_headers.get("cache-control") == "no-store, max-age=0", cached_headers
+
+    refreshed_index_status, _, _ = request(
+        "GET",
+        "/index.html",
+        {"If-Modified-Since": index_headers["last-modified"]},
+    )
+    assert refreshed_index_status == 200, refreshed_index_status
+
+    icon_status, icon_headers, _ = request("HEAD", "/apps/icon.png")
+    assert icon_status == 200, icon_status
+    assert icon_headers.get("cache-control") == "no-store, max-age=0", icon_headers
+
+    escaped_index_status, escaped_index_headers, _ = request("HEAD", "/assets/../index.html")
+    assert escaped_index_status == 200, escaped_index_status
+    assert escaped_index_headers.get("cache-control") == "no-store, max-age=0", escaped_index_headers
+finally:
+    if proc is not None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+    shutil.rmtree(workspace, ignore_errors=True)
+PY
 }
 
 test_process_detection_helper_cmdline_shapes() {
@@ -4690,7 +5691,7 @@ make_fake_extracted_asar() {
     printf 'export{s as t};\n' > "$root/webview/assets/chunk-test.js"
     printf 'import{t as e}from"./chunk-test.js";Symbol.for(`react.transitional.element`);export{e as t};\n' > "$root/webview/assets/react-test.js"
     printf 'import{t as e}from"./chunk-test.js";Symbol.for(`react.transitional.element`);export{e as t};\n' > "$root/webview/assets/jsx-runtime-test.js"
-    printf 'let marker=`vscode://codex`;async function n(){return{}}export{n};\n' > "$root/webview/assets/vscode-api-test.js"
+    printf 'async function send(e,t,n,r,i){return fetch(`vscode://codex/${e}`)}function request(...e){let[t,n]=e,{params:r,select:i,signal:a,source:o}=n??{};return send(t,r,i,a,o)}export{request as l};\n' > "$root/webview/assets/setting-storage-test.js"
     cat > "$root/webview/assets/app-server-manager-signals-test.js" <<'JS'
 function j(e){return e}function B(e){if(e==null||typeof e==`string`)return null;let t=Mi(e);return t==null?null:Ni(t)}function Mi(e){return`subAgent`in e?e.subAgent:null}function Ni(e){return typeof e==`string`?Pi():`thread_spawn`in e?{parentThreadId:j(e.thread_spawn.parent_thread_id),depth:e.thread_spawn.depth,agentNickname:e.thread_spawn.agent_nickname,agentRole:e.thread_spawn.agent_role}:Pi()}function Pi(){return{parentThreadId:null,depth:null,agentNickname:null,agentRole:null}}function Xl(e){return e==null?null:Zl(e.agentNickname)??Zl(B(e.source)?.agentNickname)}function Zl(e){if(e==null)return null;let t=e.trim();return t.length===0?null:t}
 JS
@@ -4745,31 +5746,16 @@ test_linux_translucent_sidebar_default_patch_smoke() {
     make_fake_extracted_asar \
         "$extracted" \
         'let D={removeMenu(){},setMenuBarVisibility(){},setIcon(){},once(){}};let n=require(`electron`),t=require(`node:path`),a=require(`node:fs`);...process.platform===`win32`?{autoHideMenuBar:!0}:{},process.platform===`win32`&&D.removeMenu(),foo)}),D.once(`ready-to-show`,()=>{var sa=Mi({id:`fileManager`,label:`Finder`,icon:`apps/finder.png`,kind:`fileManager`,darwin:{detect:()=>`open`,args:e=>ai(e)},win32:{label:`File Explorer`,icon:`apps/file-explorer.png`,detect:ca,args:e=>ai(e),open:async({path:e})=>la(e)}});function ca(){let e=1;return e}async function la(e){let t=ua(e);if(t&&(0,a.statSync)(t).isFile()){n.shell.showItemInFolder(t);return}let r=t??e,i=await n.shell.openPath(r);if(i)throw Error(i)}function ua(e){return e}var Ua=Mi({id:`systemDefault`,label:`System Default App`,icon:`apps/file-explorer.png`,kind:`systemDefault`,hidden:!0,darwin:{icon:`apps/finder.png`,detect:()=>`system-default`,iconPath:()=>null,args:e=>[e],open:async({path:e})=>Wa(e)},win32:{detect:()=>`system-default`,iconPath:()=>null,args:e=>[e],open:async({path:e})=>Wa(e)},linux:{detect:()=>`system-default`,iconPath:()=>null,args:e=>[e],open:async({path:e})=>Wa(e)}});async function Wa(e){return e}' \
-        'function settings(){let d=ot(r,e),f=at(e),p={codeThemeId:tt(a,e).id,theme:d},x=`settings.general.appearance.chromeTheme.translucentSidebar`;return {p,x}}' \
-        'function runtime(){let o=`light`,a=`electron`,l=null,f=null,C=fl(l,`light`),w=fl(f,`dark`);let T=o===`light`?C:w,E;if(T.opaqueWindows&&!XZ()){document.body.classList.add(`electron-opaque`);return E}return E}'
-    cat > "$extracted/webview/assets/app-main-test.js" <<'JS'
-let{data:c}=Qc(y.APPEARANCE_LIGHT_CHROME_THEME,s),l;let{data:u}=Qc(y.APPEARANCE_DARK_CHROME_THEME,l),d;let x=b,S;let C=o===`light`?x:S,w;if(C.opaqueWindows&&!ba()){e.classList.add(`electron-opaque`)}
-JS
-    cat > "$extracted/webview/assets/diff-view-mode-test.js" <<'JS'
-function oe(e,t){let n=o[t];return{accent:p(e?.accent)??n.accent,contrast:se(e?.contrast,n.contrast),fonts:le(e?.fonts),ink:p(e?.ink)??n.ink,opaqueWindows:e?.opaqueWindows??n.opaqueWindows,semanticColors:ue(e?.semanticColors,n.semanticColors),surface:p(e?.surface)??n.surface}}
-JS
+        'function settings(){let{canImportThemeString:u,setThemePatch:b,theme:x}=p(t),S=vn(r,t),k=[{label:i}],A=[];return x.opaqueWindows}' \
+        ''
 
     node "$REPO_DIR/scripts/patch-linux-window-ui.js" "$extracted" >"$output_log" 2>&1
-    assert_contains "$extracted/webview/assets/general-settings-test.js" 'navigator.userAgent.includes(`Linux`)&&r?.opaqueWindows==null&&(d={...d,opaqueWindows:!0})'
-    assert_contains "$extracted/webview/assets/index-test.js" 'document.documentElement.dataset.codexOs===`linux`&&((o===`light`?l:f)?.opaqueWindows==null&&(T={...T,opaqueWindows:!0}))'
-    assert_contains "$extracted/webview/assets/app-main-test.js" 'document.documentElement.dataset.codexOs===`linux`&&((o===`light`?c:u)?.opaqueWindows==null&&(C={...C,opaqueWindows:!0}))'
-    assert_contains "$extracted/webview/assets/diff-view-mode-test.js" 'opaqueWindows:e?.opaqueWindows??(typeof navigator<`u`&&((navigator.userAgentData?.platform??navigator.platform??navigator.userAgent).toLowerCase().includes(`linux`))?!0:n.opaqueWindows)'
+    assert_contains "$extracted/webview/assets/general-settings-test.js" 'navigator.userAgent.includes(`Linux`)&&x?.opaqueWindows==null&&(x={...x,opaqueWindows:!0})'
     assert_occurrence_count "$extracted/webview/assets/general-settings-test.js" 'navigator.userAgent.includes(`Linux`)' '1'
-    assert_occurrence_count "$extracted/webview/assets/index-test.js" 'dataset.codexOs===`linux`' '1'
-    assert_occurrence_count "$extracted/webview/assets/app-main-test.js" 'dataset.codexOs===`linux`' '1'
-    assert_occurrence_count "$extracted/webview/assets/diff-view-mode-test.js" 'toLowerCase().includes(`linux`)' '1'
     assert_not_contains "$output_log" 'Could not find Linux opaque window default insertion point'
 
     node "$REPO_DIR/scripts/patch-linux-window-ui.js" "$extracted" >"$output_log" 2>&1
     assert_occurrence_count "$extracted/webview/assets/general-settings-test.js" 'navigator.userAgent.includes(`Linux`)' '1'
-    assert_occurrence_count "$extracted/webview/assets/index-test.js" 'dataset.codexOs===`linux`' '1'
-    assert_occurrence_count "$extracted/webview/assets/app-main-test.js" 'dataset.codexOs===`linux`' '1'
-    assert_occurrence_count "$extracted/webview/assets/diff-view-mode-test.js" 'toLowerCase().includes(`linux`)' '1'
     assert_not_contains "$output_log" 'Could not find Linux opaque window default insertion point'
 }
 
@@ -4783,7 +5769,7 @@ test_linux_tray_patch_smoke() {
     mkdir -p "$workspace"
     bundle_body="$(cat <<'JS'
 let D={removeMenu(){},setMenuBarVisibility(){},setIcon(){},once(){}};
-let n=require(`electron`),i=require(`node:path`),a=require(`node:fs`);
+const x={o:e=>e};let s=require(`node:url`),n=require(`electron`);n=x.o(n);let l=require(`node:os`);l=x.o(l);let i=require(`node:path`);i=x.o(i);let d=require(`node:util`),q=require(`node:crypto`),a=require(`node:fs`);a=x.o(a);
 let t={join(){},C:{Prod:`prod`},A(){}};
 let k={hide(){},isDestroyed(){return false}};
 let f=`local`;
@@ -4794,13 +5780,13 @@ async function la(e){let t=ua(e);if(t&&(0,a.statSync)(t).isFile()){n.shell.showI
 function ua(e){return e}
 var Ua=Mi({id:`systemDefault`,label:`System Default App`,icon:`apps/file-explorer.png`,kind:`systemDefault`,hidden:!0,darwin:{icon:`apps/finder.png`,detect:()=>`system-default`,iconPath:()=>null,args:e=>[e],open:async({path:e})=>Wa(e)},win32:{detect:()=>`system-default`,iconPath:()=>null,args:e=>[e],open:async({path:e})=>Wa(e)},linux:{detect:()=>`system-default`,iconPath:()=>null,args:e=>[e],open:async({path:e})=>Wa(e)}});
 async function Wa(e){return e}
-function Nw(e,n){return `icon`}
-async function Hw(e){return process.platform!==`win32`&&process.platform!==`darwin`?null:(zw=!0,Lw??Rw??(Rw=(async()=>{let r=await Ww(e.buildFlavor,e.repoRoot),i=new n.Tray(r.defaultIcon);return i})()))}
-async function Ww(e,t){if(process.platform===`darwin`){return null}let r=process.platform===`win32`?`.ico`:`.png`,a=Nw(e,process.platform),o=[...n.app.isPackaged?[(0,i.join)(process.resourcesPath,`${a}${r}`)]:[],(0,i.join)(t,`electron`,`src`,`icons`,`${a}${r}`)];for(let e of o){let t=n.nativeImage.createFromPath(e);if(!t.isEmpty())return{defaultIcon:t,chronicleRunningIcon:null}}return{defaultIcon:await n.app.getFileIcon(process.execPath,{size:process.platform===`win32`?`small`:`normal`}),chronicleRunningIcon:null}}
+async function Hw(e){return process.platform!==`win32`&&process.platform!==`darwin`?null:(zw=!0,Lw??Rw??(Rw=(async()=>{let r=await Ww(e.buildFlavor,e.appBrand,e.repoRoot),i=new n.Tray(r.defaultIcon);return i})()))}
+async function Ww(e,t,i){if(process.platform===`darwin`){return null}let r=K9(e,t,i);return r==null?{defaultIcon:await n.app.getFileIcon(process.execPath,{size:`small`}),chronicleRunningIcon:null}:{defaultIcon:r,chronicleRunningIcon:null}}
+function K9(e,t,r){let a=[(0,i.join)(r,`electron`,`src`,`icons`,`tray.png`)];for(let e of a){let t=n.nativeImage.createFromPath(e);if(!t.isEmpty())return t}return null}
 var pb=class{trayMenuThreads={runningThreads:[],unreadThreads:[],pinnedThreads:[],recentThreads:[],usageLimits:[]};constructor(){this.tray={on(){},setContextMenu(){},popUpContextMenu(){}};this.onTrayButtonClick=()=>{};this.tray.on(`click`,()=>{this.onTrayButtonClick()}),this.tray.on(`right-click`,()=>{this.openNativeTrayMenu()})}async handleMessage(e){switch(e.type){case`tray-menu-threads-changed`:this.trayMenuThreads=e.trayMenuThreads;return}}openNativeTrayMenu(){this.updateChronicleTrayIcon();let e=n.Menu.buildFromTemplate(this.getNativeTrayMenuItems());e.once(`menu-will-show`,()=>{this.isNativeTrayMenuOpen=!0}),e.once(`menu-will-close`,()=>{this.isNativeTrayMenuOpen=!1,this.handleNativeTrayMenuClosed()}),this.tray.popUpContextMenu(e)}updateChronicleTrayIcon(){}getNativeTrayMenuItems(){return[]}}
-v&&k.on(`close`,e=>{this.persistPrimaryWindowBounds(k,f);let t=this.getPrimaryWindows(f).some(e=>e!==k);if(process.platform===`win32`&&!this.isAppQuitting&&this.options.canHideLastLocalWindowToTray?.()===!0&&!t){e.preventDefault(),k.hide();return}if(process.platform===`darwin`&&!this.isAppQuitting&&!t){e.preventDefault(),k.hide()}});
+v&&k.on(`close`,e=>{this.persistPrimaryWindowBounds(k);let t=this.getPrimaryWindows().some(e=>e!==k);if(process.platform===`win32`&&!this.isAppQuitting&&this.options.canHideLastWindowToTray?.()===!0&&!t){e.preventDefault(),k.hide();return}if(process.platform===`darwin`&&!this.isAppQuitting&&!t){e.preventDefault(),k.hide()}});
 let E=process.platform===`win32`;
-let oe=async()=>{};
+let oe=async()=>{O=!0;try{await Hw({appBrand:a.U(),buildFlavor:b,repoRoot:j.repoRoot})}catch(e){O=!1}};
 let se=async e=>{};
 E&&oe();let ce=Hr({});
 JS
@@ -4836,7 +5822,7 @@ function registerCloseHandler({ quitInProgress = false, isAppQuitting = false, t
   const state = { hideCalls: 0 };
   const controller = {
     isAppQuitting,
-    options: { canHideLastLocalWindowToTray: () => trayEnabled },
+    options: { canHideLastWindowToTray: () => trayEnabled },
     persistPrimaryWindowBounds() {},
     getPrimaryWindows() {
       return [];
@@ -4863,7 +5849,7 @@ function runCloseWithoutHelper({ trayEnabled = true, isAppQuitting = false } = {
   const state = { hideCalls: 0 };
   const controller = {
     isAppQuitting,
-    options: { canHideLastLocalWindowToTray: () => trayEnabled },
+    options: { canHideLastWindowToTray: () => trayEnabled },
     persistPrimaryWindowBounds() {},
     getPrimaryWindows() {
       return [];
@@ -4913,7 +5899,7 @@ if (!result.event.prevented || result.state.hideCalls !== 1) {
 NODE
 
     node "$REPO_DIR/scripts/patch-linux-window-ui.js" "$extracted" >"$output_log" 2>&1
-    assert_occurrence_count "$extracted/.vite/build/main-test.js" 'process.platform!==`linux`' '1'
+    assert_occurrence_count "$extracted/.vite/build/main-test.js" 'process.platform!==`win32`&&process.platform!==`darwin`&&process.platform!==`linux`?null:' '1'
     assert_occurrence_count "$extracted/.vite/build/main-test.js" 'nativeImage.createFromPath(process.resourcesPath' '3'
     assert_occurrence_count "$extracted/.vite/build/main-test.js" 'nativeImage.createFromPath(process.resourcesPath+`/../.codex-linux/codex-desktop-tray.png`)' '1'
     assert_occurrence_count "$extracted/.vite/build/main-test.js" 'nativeImage.createFromPath(process.resourcesPath+`/../.codex-linux/codex-desktop.png`)' '1'
@@ -4939,11 +5925,11 @@ test_linux_explicit_quit_patch_smoke() {
 
     mkdir -p "$workspace"
     bundle_body="$(cat <<'JS'
-let n=require(`electron`),i=require(`node:path`),a=require(`node:fs`);
+const x={o:e=>e};let s=require(`node:url`),n=require(`electron`);n=x.o(n);let l=require(`node:os`);l=x.o(l);let i=require(`node:path`);i=x.o(i);let d=require(`node:util`),q=require(`node:crypto`),a=require(`node:fs`);a=x.o(a);
 var pb=class{getNativeTrayMenuItems(){return[{label:rB(this.appName),click:()=>{n.app.quit()}}]}};
 function qB(r,o){if(o.type===`quit-app`){n.app.quit();return}return o}
 n.app.on(`before-quit`,o=>{let s=BI(),c=t.sr().some(e=>e.status===`ACTIVE`);if(e||i.canQuitWithoutPrompt()||r||!s&&!c){g=!0,a.markAppQuitting();return}let l=n.app.getName();if(n.dialog.showMessageBoxSync({type:`warning`,buttons:[`Quit`,`Cancel`],defaultId:0,cancelId:1,noLink:!0,title:`Quit ${l}?`,message:`Quit ${l}?`,detail:vB({hasInProgressLocalConversation:s,hasEnabledAutomations:c})})!==0){o.preventDefault();return}i.markQuitApproved(),g=!0,a.markAppQuitting()});
-n.app.on(`will-quit`,e=>{if(g=!0,!h){if(i.shouldSkipDrainBeforeQuit()){mB({hotkeyWindowLifecycleManager:c,globalDictationLifecycleManager:l,flushAndDisposeContexts:d,disposables:f});return}e.preventDefault(),h=!0,c.dispose(),l.dispose(),Promise.all([...u.values()].map(e=>e.flush())).finally(()=>{d(),f.dispose(),n.app.quit()})}});
+n.app.on(`will-quit`,e=>{if(g=!0,!h){if(i.shouldSkipDrainBeforeQuit()){mB({hotkeyWindowLifecycleManager:c,globalDictationLifecycleManager:l,flushAndDisposeContexts:d,disposables:f});return}e.preventDefault(),h=!0,c.dispose(),l.dispose(),Promise.all([u.flush(),p.flush()]).finally(()=>{d(),f.dispose(),n.app.quit()})}});
 JS
 )"
     make_fake_extracted_asar "$extracted" "$bundle_body"
@@ -5079,7 +6065,7 @@ JS
 import{t as d}from"./jsx-runtime-test.js";var c={"general-settings":{id:`settings.nav.general-settings`,defaultMessage:`General`,description:`Title for general settings section`},"keyboard-shortcuts":{id:`settings.nav.keyboard-shortcuts`,defaultMessage:`Keyboard shortcuts`,description:`Title for keyboard shortcuts settings section`}};function m(e){let t=(0,u.c)(17),{slug:r}=e;switch(r){case`keyboard-shortcuts`:{let e;return t[1]===Symbol.for(`react.memo_cache_sentinel`)?(e=(0,d.jsx)(n,{id:`settings.section.keyboard-shortcuts`,defaultMessage:`Keyboard shortcuts`,description:`Title for keyboard shortcuts settings section`}),t[1]=e):e=t[1],e}case`general-settings`:{let e;return t[2]===Symbol.for(`react.memo_cache_sentinel`)?(e=(0,d.jsx)(n,{id:`settings.section.general-settings`,defaultMessage:`General`,description:`Title for general settings section`}),t[2]=e):e=t[2],e}}}
 JS
     cat > "$extracted/webview/assets/index-test.js" <<'JS'
-var Xge={"general-settings":xh,"keyboard-shortcuts":ks,appearance:Pf,agent:gU},H7={},Zge=[`general-settings`,`profile`,`keyboard-shortcuts`,`appearance`,`agent`,`personalization`,`mcp-settings`,`connections`,`git-settings`,`local-environments`,`worktrees`,`browser-use`,`computer-use`,`data-controls`],Qge=[{key:`app`,heading:H7.appHeading,slugs:[`general-settings`,`profile`,`keyboard-shortcuts`,`appearance`,`connections`,`git-settings`,`usage`]}];function n_e(){let l=`electron`,e=e=>{switch(e.slug){case`appearance`:case`git-settings`:case`worktrees`:case`local-environments`:case`data-controls`:case`environments`:return l===`electron`;case`account`:case`general-settings`:case`agent`:case`personalization`:case`keyboard-shortcuts`:case`mcp-settings`:return!0}};if(O)bb0:switch(D.slug){case`usage`:k=g;break bb0;case`appearance`:case`general-settings`:case`agent`:case`git-settings`:case`account`:case`data-controls`:case`personalization`:case`keyboard-shortcuts`:k=!1;break bb0;}}function s_e(e){let{slug:n}=e,r=c_e[n];return (0,$.jsx)(r,{})}var c_e={"general-settings":(0,Z.lazy)(()=>s(()=>import(`./general-settings-DZbwMmWz.js`).then(e=>({default:e.GeneralSettings})),__vite__mapDeps([4]),import.meta.url)),"keyboard-shortcuts":(0,Z.lazy)(()=>s(()=>import(`./keyboard-shortcuts-settings-test.js`),[],import.meta.url)),appearance:(0,Z.lazy)(()=>s(()=>import(`./appearance-settings-D4xYjo5o.js`).then(e=>({default:e.AppearanceSettings})),__vite__mapDeps([56]),import.meta.url)),agent:(0,Z.lazy)(()=>Promise.resolve({default:l_e}))};
+var Xge={"general-settings":xh,"keyboard-shortcuts":ks,appearance:Pf,agent:gU},H7={},Zge=[`general-settings`,`profile`,`keyboard-shortcuts`,`appearance`,`agent`,`personalization`,`mcp-settings`,`connections`,`git-settings`,`local-environments`,`worktrees`,`browser-use`,`computer-use`,`data-controls`],Qge=[{key:`app`,heading:H7.appHeading,slugs:[`general-settings`,`profile`,`keyboard-shortcuts`,`appearance`,`connections`,`git-settings`,`usage`]}];function n_e(){let e=e=>{switch(e.slug){case`general-settings`:case`agent`:case`personalization`:return!0;case`keyboard-shortcuts`:return!0}};if(O)bb0:switch(D.slug){case`usage`:k=g;break bb0;case`appearance`:case`general-settings`:case`agent`:case`git-settings`:case`account`:case`data-controls`:case`personalization`:k=!1;break bb0;case`keyboard-shortcuts`:k=!1;break bb0;}}function s_e(e){let{slug:n}=e,r=c_e[n];return (0,$.jsx)(r,{})}var c_e={"general-settings":Z(async()=>(await s(async()=>{let{GeneralSettings:e}=await import(`./general-settings-DZbwMmWz.js`);return{GeneralSettings:e}},[],import.meta.url)).GeneralSettings),"keyboard-shortcuts":Z(async()=>(await s(async()=>{let{KeyboardShortcutsSettings:e}=await import(`./keyboard-shortcuts-settings-test.js`);return{KeyboardShortcutsSettings:e}},[],import.meta.url)).KeyboardShortcutsSettings)};
 JS
     cat > "$extracted/webview/assets/keyboard-shortcuts-settings-test.js" <<'JS'
 slug:`keyboard-shortcuts`;export default function KeyboardShortcutsSettings(){}
@@ -5107,7 +6093,7 @@ JS
     assert_contains "$extracted/webview/assets/index-test.js" '"linux-desktop":'
     assert_contains "$extracted/webview/assets/index-test.js" 'Zge=\[`general-settings`,`linux-desktop`'
     assert_contains "$extracted/webview/assets/index-test.js" 'slugs:\[`general-settings`,`linux-desktop`'
-    assert_contains "$extracted/webview/assets/index-test.js" 'case`linux-desktop`:return l===`electron`'
+    assert_contains "$extracted/webview/assets/index-test.js" 'case`linux-desktop`:case`general-settings`'
     assert_not_contains "$extracted/webview/assets/index-test.js" "keybinds-settings-linux.js"
     assert_not_contains "$extracted/webview/assets/index-test.js" "codexLinuxKeybindOverridesRuntime"
 
@@ -5142,7 +6128,6 @@ JS
 
     node "$REPO_DIR/scripts/patch-linux-window-ui.js" "$extracted" >"$output_log" 2>&1
     assert_contains "$output_log" "WARN: Keybinds settings patch skipped"
-    assert_contains "$output_log" "could not add Linux desktop visibility"
     [ ! -f "$extracted/webview/assets/linux-desktop-settings-linux.js" ] || fail "Linux desktop settings asset should not be written when route bundle is missing"
     [ ! -f "$extracted/webview/assets/linux-settings-row-linux.js" ] || fail "Fallback row asset should not be written when route bundle is missing"
     [ ! -f "$extracted/webview/assets/linux-settings-section-linux.js" ] || fail "Fallback section asset should not be written when route bundle is missing"
@@ -5184,10 +6169,10 @@ test_linux_single_instance_patch_smoke() {
     mkdir -p "$workspace"
     bundle_body="$(cat <<'JS'
 let S=globalThis.__codexSmoke;
-let n={app:{whenReady(){return Promise.resolve()},quit(){S.quitCount++},requestSingleInstanceLock(){S.lockCount++;return true},on(e,t){S.appHandlers[e]=t},off(e,t){S.offHandlers[e]=t}}};
+let n=require(`electron`);
 let t={Er(){return {info(){}}},jn:class{add(e){S.disposables.push(e)}},y(){return{setSecondInstanceArgsHandler:e=>{S.initialHandler=e}}},g(e){return e},t(e){return Array.isArray(e)&&e.includes(`--open-project`)}};
 let i={default:{dirname(e){S.dirnameCalls.push(e);return `/tmp`}}},o={mkdirSync(...e){S.mkdirSyncCalls.push(e)},rmSync(...e){S.rmSyncCalls.push(e)}},u={default:{createServer(e){S.createServerCalls++;S.socketConnectionHandler=e;return S.socketServer}}};
-async function uT(){let{setSecondInstanceArgsHandler:l}=t.y(),k=new t.jn;k.add(()=>{}),t.Er().info(`Launching app`,{safe:{agentRunId:process.env.CODEX_ELECTRON_AGENT_RUN_ID?.trim()||null}});let A=Date.now();await n.app.whenReady();let w=(...e)=>{S.traceCalls.push(e)},M={globalState:S.globalState,repoRoot:`/tmp/codex-smoke`},z=`local`,R={deepLinks:{queueProcessArgs(e){S.queueArgs.push(e);return Array.isArray(e)&&e.some(e=>{let t=String(e);return t.startsWith(`codex://`)||t.startsWith(`codex-browser-sidebar://`)})},flushPendingDeepLinks(){S.flushPendingDeepLinksCalls++;return Promise.resolve()}},navigateToRoute(e,t){S.navigateCalls.push({windowId:e.id,path:t})}},P={windowManager:{sendMessageToWindow(e,t){S.messages.push({windowId:e.id,message:t})}},hotkeyWindowLifecycleManager:{hide(){S.hideCalls++},show(){S.showCalls++;return S.hotkeyWindowShowResult},ensureHotkeyWindowController(){S.ensureHotkeyWindowControllerCalls++;return S.hotkeyWindowController}},getPrimaryWindow(){return S.primaryWindow},createFreshLocalWindow(e){S.createFreshLocalWindowCalls.push(e);return S.createdWindow},ensureHostWindow(e){S.ensureHostWindowCalls.push(e);return S.primaryWindow??S.createdWindow}},g={reportNonFatal(e,t){S.errors.push({error:String(e),meta:t})}},re=e=>{S.focusCalls.push(e.id);e.isMinimized()&&e.restore(),e.show(),e.focus()},ie=async()=>{S.ieCalls++;try{P.hotkeyWindowLifecycleManager.hide();let e=P.getPrimaryWindow()??await P.createFreshLocalWindow(`/`);if(e==null)return;re(e)}catch(e){g.reportNonFatal(e instanceof Error?e:`Failed to open window on second instance`,{kind:`second-instance-open-window-failed`})}};l(e=>{let n=t.t(t.g(e));if(R.deepLinks.queueProcessArgs(e)){n&&ie();return}if(n){ie();return}ie()});let ae=async(e,t)=>{P.hotkeyWindowLifecycleManager.hide();let n=P.getPrimaryWindow(),r=n??await P.createFreshLocalWindow(e);r!=null&&(n!=null&&t.navigateExistingWindow&&R.navigateToRoute(r,e),re(r))},oe=async()=>{S.trayStartupCalls++};let E=process.platform===`win32`;E&&oe();let me=await P.ensureHostWindow(z);me&&re(me),w(`local window ensured`,A,{hostId:z,localWindowVisible:me?.isVisible()??!1}),A=Date.now(),await R.deepLinks.flushPendingDeepLinks()}
+async function uT(){let{setSecondInstanceArgsHandler:l}=t.y(),k=new t.jn;k.add(()=>{}),t.Er().info(`Launching app`,{safe:{agentRunId:process.env.CODEX_ELECTRON_AGENT_RUN_ID?.trim()||null}});let A=Date.now();await n.app.whenReady();let w=(...e)=>{S.traceCalls.push(e)},M={globalState:S.globalState,repoRoot:`/tmp/codex-smoke`},z=`local`,R={deepLinks:{queueProcessArgs(e){S.queueArgs.push(e);return Array.isArray(e)&&e.some(e=>{let t=String(e);return t.startsWith(`codex://`)||t.startsWith(`codex-browser-sidebar://`)})},flushPendingDeepLinks(){S.flushPendingDeepLinksCalls++;return Promise.resolve()}},navigateToRoute(e,t){S.navigateCalls.push({windowId:e.id,path:t})}},P={windowManager:{sendMessageToWindow(e,t){S.messages.push({windowId:e.id,message:t})}},hotkeyWindowLifecycleManager:{hide(){S.hideCalls++},show(){S.showCalls++;return S.hotkeyWindowShowResult},ensureHotkeyWindowController(){S.ensureHotkeyWindowControllerCalls++;return S.hotkeyWindowController}},getPrimaryWindow(){return S.primaryWindow},createFreshLocalWindow(e){S.createFreshLocalWindowCalls.push(e);return S.createdWindow},ensureHostWindow(e){S.ensureHostWindowCalls.push(e);return S.primaryWindow??S.createdWindow}},g={reportNonFatal(e,t){S.errors.push({error:String(e),meta:t})}},re=e=>{S.focusCalls.push(e.id);e.isMinimized()&&e.restore(),e.show(),e.focus()},ie=async()=>{S.ieCalls++;try{P.hotkeyWindowLifecycleManager.hide();let e=P.getPrimaryWindow()??await P.createFreshLocalWindow(`/`);if(e==null)return;re(e)}catch(e){g.reportNonFatal(e instanceof Error?e:`Failed to open window on second instance`,{kind:`second-instance-open-window-failed`})}};l(e=>{let n=t.t(t.g(e));if(R.deepLinks.queueProcessArgs(e)){n&&ie();return}if(n){ie();return}ie()});let ae=async(e,t)=>{P.hotkeyWindowLifecycleManager.hide();let n=P.getPrimaryWindow(),r=n??await P.createFreshLocalWindow(e);r!=null&&(n!=null&&t.navigateExistingWindow&&R.navigateToRoute(r,e),re(r))};async function ore(e){return new n.Tray(e)}let oe=async()=>{N=!0;try{await ore({appBrand:`codex`,buildFlavor:`prod`,repoRoot:M.repoRoot}),S.trayStartupCalls++}catch(e){N=!1}};let E=process.platform===`win32`;E&&oe();let me=await P.ensureHostWindow(z);me&&re(me),w(`local window ensured`,A,{hostId:z,localWindowVisible:me?.isVisible()??!1}),A=Date.now(),await R.deepLinks.flushPendingDeepLinks()}
 JS
 )"
     make_fake_extracted_asar "$extracted" "$bundle_body"
@@ -5402,6 +6387,29 @@ async function boot(settings = {}, env = { CODEX_DESKTOP_LAUNCH_ACTION_SOCKET: "
     console,
     process: { platform: "linux", env },
     require(moduleName) {
+      if (moduleName === "electron") {
+        return {
+          app: {
+            whenReady() {
+              return Promise.resolve();
+            },
+            quit() {
+              state.quitCount++;
+            },
+            requestSingleInstanceLock() {
+              state.lockCount++;
+              return true;
+            },
+            on(event, handler) {
+              state.appHandlers[event] = handler;
+            },
+            off(event, handler) {
+              state.offHandlers[event] = handler;
+            },
+          },
+          Tray: class {},
+        };
+      }
       if (moduleName === "node:path") {
         return {
           dirname(path) {
@@ -5684,17 +6692,19 @@ test_linux_computer_use_gate_patch_smoke() {
     bundle_body="$(cat <<'JS'
 let n={app:{whenReady(){},quit(){},requestSingleInstanceLock(){},on(){},off(){}}};
 let Qt=`openai-bundled`,$t=`browser-use`,en=`chrome-internal`,tn=`computer-use`,nn=`latex-tectonic`;
-var $n=[{forceReload:!0,installWhenMissing:!0,name:$t,isEnabled:({features:e})=>e.browserAgentAvailable,migrate:cn},{name:en,isEnabled:({buildFlavor:e})=>rn(e)},{name:tn,isEnabled:({features:e,platform:t})=>t===`darwin`&&e.computerUse,migrate:wn},{name:nn,isEnabled:()=>!0}];
+function cl(e){if(!(e.platform!==`darwin`||!e.marketplacePluginNames.includes(`computer-use`)))return e.desktopFeatureAvailability.computerUseNodeRepl?`node-repl`:`legacy-mcp`}
+var $n=[{forceReload:!0,installWhenMissing:!0,name:$t,isEnabled:({features:e})=>e.browserAgentAvailable,migrate:cn},{name:en,isEnabled:({buildFlavor:e})=>rn(e)},{name:tn,isEnabled:cl,migrate:wn},{name:nn,isEnabled:()=>!0}];
 JS
 )"
     make_fake_extracted_asar "$extracted" "$bundle_body"
 
     node "$REPO_DIR/scripts/patch-linux-window-ui.js" "$extracted" >"$output_log" 2>&1
-    assert_contains "$extracted/.vite/build/main-test.js" '(t===`darwin`||t===`linux`)&&e.computerUse'
-    assert_not_contains "$extracted/.vite/build/main-test.js" 't===`darwin`&&e.computerUse'
+    assert_contains "$extracted/.vite/build/main-test.js" 'if(!((e.platform!==`darwin`&&e.platform!==`linux`)||!e.marketplacePluginNames.includes(`computer-use`))'
+    assert_contains "$extracted/.vite/build/main-test.js" 'return e.platform===`darwin`&&e.desktopFeatureAvailability.computerUseNodeRepl?`node-repl`:`legacy-mcp`'
+    assert_not_contains "$extracted/.vite/build/main-test.js" 'if(!(e.platform!==`darwin`||!e.marketplacePluginNames.includes(`computer-use`)))return e.desktopFeatureAvailability.computerUseNodeRepl?`node-repl`:`legacy-mcp`'
 
     node "$REPO_DIR/scripts/patch-linux-window-ui.js" "$extracted" >"$output_log" 2>&1
-    assert_occurrence_count "$extracted/.vite/build/main-test.js" '(t===`darwin`||t===`linux`)&&e.computerUse' '1'
+    assert_occurrence_count "$extracted/.vite/build/main-test.js" 'return e.platform===`darwin`&&e.desktopFeatureAvailability.computerUseNodeRepl?`node-repl`:`legacy-mcp`' '1'
 }
 
 test_linux_computer_use_ui_opt_in_smoke() {
@@ -5704,10 +6714,10 @@ test_linux_computer_use_ui_opt_in_smoke() {
     local fake_home="$workspace/home"
     local output_log="$workspace/output.log"
     local main_bundle="$extracted/.vite/build/main-test.js"
-    local renderer_asset="$extracted/webview/assets/use-model-settings-test.js"
-    local current_renderer_asset="$extracted/webview/assets/use-is-plugins-enabled-current-test.js"
+    local renderer_asset="$extracted/webview/assets/computer-use-settings-renderer-test.js"
+    local current_renderer_asset="$extracted/webview/assets/computer-use-settings-current-test.js"
     local install_flow_asset="$extracted/webview/assets/app-initial~app-main~worktree-init-v2-page~remote-conversation-page~pull-requests-page~plug~test.js"
-    local native_apps_asset="$extracted/webview/assets/use-native-apps.electron-test.js"
+    local native_apps_asset="$extracted/webview/assets/computer-use-settings-native-apps-test.js"
     local bundle_body
     local renderer_body
     local current_renderer_body
@@ -5720,7 +6730,8 @@ test_linux_computer_use_ui_opt_in_smoke() {
 let n={app:{whenReady(){},quit(){},requestSingleInstanceLock(){},on(){},off(){}}};
 let cp=require(`node:child_process`),fs=require(`node:fs`),p=require(`node:path`),os=require(`node:os`);
 let Qt=`openai-bundled`,$t=`browser-use`,en=`chrome-internal`,tn=`computer-use`,nn=`latex-tectonic`;
-var $n=[{name:tn,isEnabled:({features:e,platform:t})=>t===`darwin`&&e.computerUse,migrate:wn}];
+function cl(e){if(!(e.platform!==`darwin`||!e.marketplacePluginNames.includes(`computer-use`)))return e.desktopFeatureAvailability.computerUseNodeRepl?`node-repl`:`legacy-mcp`}
+var $n=[{name:tn,isEnabled:cl,migrate:wn}];
 function me(e,{env:t=process.env,platform:n=process.platform}={}){return n!==`win32`||t.CODEX_ELECTRON_ENABLE_WINDOWS_COMPUTER_USE!==`1`?e:{...e,computerUse:!0,computerUseNodeRepl:!0}}
 var h={handlers:{"native-desktop-apps":async()=>({apps:[]})}};
 JS
@@ -5757,7 +6768,9 @@ JS
         env -u CODEX_LINUX_ENABLE_COMPUTER_USE_UI -u CODEX_LINUX_APP_ID -u CODEX_APP_ID -u CODEX_LINUX_SETTINGS_FILE \
         HOME="$fake_home" XDG_CONFIG_HOME="$fake_home/.config" \
         node "$REPO_DIR/scripts/patch-linux-window-ui.js" "$extracted" >"$output_log" 2>&1
-    assert_contains "$main_bundle" '(t===`darwin`||t===`linux`)&&e.computerUse'
+    assert_contains "$main_bundle" 'if(!((e.platform!==`darwin`&&e.platform!==`linux`)||!e.marketplacePluginNames.includes(`computer-use`))'
+    assert_contains "$main_bundle" 'return e.platform===`darwin`&&e.desktopFeatureAvailability.computerUseNodeRepl?`node-repl`:`legacy-mcp`'
+    assert_not_contains "$main_bundle" 'if(!(e.platform!==`darwin`||!e.marketplacePluginNames.includes(`computer-use`)))return e.desktopFeatureAvailability.computerUseNodeRepl?`node-repl`:`legacy-mcp`'
     assert_not_contains "$main_bundle" 'return n===`linux`?{...e,computerUse:!0,computerUseNodeRepl:!0}'
     assert_not_contains "$main_bundle" 'codexLinuxNativeDesktopApps'
     assert_not_contains "$renderer_asset" 'function hae(e){return e===`macOS`||e===`windows`||e===`linux`}'
@@ -5776,7 +6789,8 @@ JS
     env -u CODEX_LINUX_APP_ID -u CODEX_APP_ID -u CODEX_LINUX_SETTINGS_FILE \
         CODEX_LINUX_ENABLE_COMPUTER_USE_UI=1 HOME="$fake_home" XDG_CONFIG_HOME="$fake_home/.config" \
         node "$REPO_DIR/scripts/patch-linux-window-ui.js" "$extracted" >"$output_log" 2>&1
-    assert_contains "$main_bundle" '(t===`darwin`||t===`linux`)&&e.computerUse'
+    assert_contains "$main_bundle" 'if(!((e.platform!==`darwin`&&e.platform!==`linux`)||!e.marketplacePluginNames.includes(`computer-use`))'
+    assert_contains "$main_bundle" 'return e.platform===`darwin`&&e.desktopFeatureAvailability.computerUseNodeRepl?`node-repl`:`legacy-mcp`'
     assert_contains "$main_bundle" 'return n===`linux`?{...e,computerUse:!0,computerUseNodeRepl:!0}'
     assert_contains "$main_bundle" 'codexLinuxNativeDesktopApps'
     assert_contains "$main_bundle" '"computer-use-native-desktop-app-icon":async(e)=>process.platform===`linux`?codexLinuxNativeDesktopAppIcon(e):{iconSmall:``}'
@@ -6644,6 +7658,8 @@ EOF
 main() {
     test_common_helper_sourcing
     test_extract_webview_replaces_linux_icon_assets
+    test_extract_webview_requires_entrypoint
+    test_package_layout_requires_webview_entrypoint
     test_package_payload_permission_normalization
     test_deb_builder_smoke
     test_deb_builder_rebuilds_deleted_updater_source
@@ -6662,13 +7678,16 @@ main() {
     test_make_run_app_reports_missing_launcher
     test_make_build_app_uses_installer_download_flow_by_default
     test_make_build_app_fresh_uses_installer_fresh_flow
+    test_make_build_dev_app_writes_host_portable_launcher_symlink
     test_installer_refreshes_stale_cached_dmg_metadata
     test_extract_dmg_repairs_safe_7z_link_warnings
     test_fresh_install_removes_cached_dmg_metadata
+    test_fresh_pinned_dmg_preserves_cached_dmg_metadata
     test_fresh_reuse_dmg_uses_cache_when_metadata_matches
     test_rebuild_candidate_uses_validated_default_dmg
     test_native_shortcut_targets_compose_existing_flows
     test_fedora_dependency_bootstrap_installs_rpmbuild
+    test_fedora_atomic_rpm_ostree_target_detection
     test_setup_native_wizard_noninteractive_feature_writer
     test_setup_native_wizard_rejects_invalid_feature_ids
     test_setup_native_wizard_rejects_features_without_readme
@@ -6691,7 +7710,6 @@ main() {
     test_setup_native_wizard_blank_interactive_cleanup_ids_skip_cleanup
     test_setup_native_wizard_dry_run_cleanup_does_not_delete_confirmed_paths
     test_setup_native_wizard_cleanup_deletes_only_confirmed_paths
-    test_upstream_build_app_workflow_tracks_dmg_metadata
     test_update_nix_hashes_skips_unchanged_package_verification
     test_update_nix_hashes_verifies_changed_pins
     test_update_nix_hashes_verifies_changed_dmg_hash
@@ -6715,7 +7733,11 @@ main() {
     test_chrome_browser_client_profile_root_variants
     test_chrome_marketplace_fallback_synthesis
     test_chrome_native_host_manifest_writer
+    test_launcher_managed_node_handles_unset_path
+    test_launcher_rejects_missing_webview_entrypoint
     test_launcher_template_sanity
+    test_launcher_cli_resolution_policy
+    test_webview_server_cache_policy
     test_process_detection_helper_cmdline_shapes
     test_webview_probe_equivalence
     test_side_by_side_launcher_identity

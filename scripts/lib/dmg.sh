@@ -5,7 +5,7 @@
 # shellcheck shell=bash
 
 # ---- Download or find Codex DMG ----
-DEFAULT_DMG_URL="https://persistent.oaistatic.com/codex-app-prod/Codex.dmg"
+DEFAULT_DMG_URL="https://persistent.oaistatic.com/codex-app-prod/ChatGPT.dmg"
 DMG_URL="${CODEX_UPSTREAM_DMG_URL:-$DEFAULT_DMG_URL}"
 DMG_REMOTE_FINGERPRINT=""
 
@@ -172,6 +172,16 @@ get_dmg() {
     local metadata_path="$CACHED_DMG_METADATA_PATH"
     local download_fingerprint=""
     local tmp_dest="$dmg_dest.part"
+
+    if dmg_refresh_mode_is_pinned; then
+        if [ -s "$dmg_dest" ]; then
+            warn "CODEX_DMG_REFRESH_MODE=pinned; using cached DMG without checking upstream: $dmg_dest"
+            echo "$dmg_dest"
+            return
+        fi
+
+        error "CODEX_DMG_REFRESH_MODE=pinned requires an existing cached DMG at $dmg_dest or an explicit DMG path"
+    fi
 
     validate_dmg_url "$DMG_URL"
 

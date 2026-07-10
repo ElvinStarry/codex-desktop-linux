@@ -186,7 +186,7 @@ run_as_ci_user() {
         "CI_PACKAGE_VERSION=$CI_PACKAGE_VERSION"
         "PACKAGE_VERSION=$CI_PACKAGE_VERSION"
         "CI_DMG_PATH=${CI_DMG_PATH:-}"
-        "UPSTREAM_DMG_URL=${UPSTREAM_DMG_URL:-https://persistent.oaistatic.com/codex-app-prod/Codex.dmg}"
+        "UPSTREAM_DMG_URL=${UPSTREAM_DMG_URL:-https://persistent.oaistatic.com/codex-app-prod/ChatGPT.dmg}"
         "UPSTREAM_DMG_PATH=${UPSTREAM_DMG_PATH:-/tmp/codex-upstream-ci/Codex.dmg}"
         "UPSTREAM_DMG_CACHE_HIT=${UPSTREAM_DMG_CACHE_HIT:-}"
         "GITHUB_STEP_SUMMARY=${GITHUB_STEP_SUMMARY:-}"
@@ -300,20 +300,14 @@ run_core_job() {
     cargo check --workspace --all-targets
     cargo test --workspace --all-targets
 
-    node --check scripts/patch-linux-window-ui.js
-    node --check scripts/patch-linux-window-ui.test.js
-    for file in scripts/patches/*.js; do
-        node --check "$file"
-    done
-    node --check scripts/ci/validate-patch-report.js
-    node --test scripts/patch-linux-window-ui.test.js
+    bash scripts/ci/run-node-checks.sh
 
     bash tests/scripts_smoke.sh
 
     append_summary "Rust and Smoke Tests" \
         "Shell syntax checks passed." \
         "Rust formatting, clippy, check, and tests passed." \
-        "Node patcher checks and script smoke tests passed."
+        "Node syntax checks, Node tests, and script smoke tests passed."
 }
 
 run_deb_job() {

@@ -22,6 +22,7 @@ ensure_file_exists() {
 ensure_app_layout() {
     [ -d "$APP_DIR" ] || error "Missing app directory: $APP_DIR. Run ./install.sh first."
     [ -x "$APP_DIR/start.sh" ] || error "Missing launcher: $APP_DIR/start.sh"
+    [ -f "$APP_DIR/content/webview/index.html" ] || error "Missing webview entrypoint: $APP_DIR/content/webview/index.html. Run ./install.sh first."
 }
 
 sed_escape_replacement() {
@@ -646,10 +647,24 @@ fs.writeFileSync(infoFile, `${JSON.stringify(info, null, 2)}\n`, "utf8");
 NODE
 }
 
+write_update_builder_manifest() {
+    local update_builder_root="$1"
+    local manifest="$update_builder_root/.codex-linux/update-builder-manifest.txt"
+    (
+        cd "$update_builder_root"
+        find . -mindepth 1 -type f \
+            ! -path './node-runtime/*' \
+            ! -path './.codex-linux/update-builder-manifest.txt' \
+            -printf '%P\n' | LC_ALL=C sort > "$manifest"
+    )
+}
+
 stage_common_package_files() {
     local root="$1"
     local app_root="$root/opt/$PACKAGE_NAME"
     local polkit_policy="$REPO_DIR/packaging/linux/com.github.ilysenko.codex-desktop-linux.update.policy"
+
+    ensure_app_layout
 
     if package_with_updater_enabled; then
         ensure_file_exists "$polkit_policy" "polkit policy"
@@ -787,6 +802,7 @@ stage_update_builder_bundle() {
     cp "$REPO_DIR/assets/codex.png" "$update_builder_root/assets/codex.png"
     cp "$REPO_DIR/assets/codex-linux.png" "$update_builder_root/assets/codex-linux.png"
     stage_update_builder_source_info "$update_builder_root"
+    write_update_builder_manifest "$update_builder_root"
     if [ -d "$node_runtime_source" ]; then
         cp -a "$node_runtime_source" "$update_builder_root/node-runtime"
     else
@@ -877,7 +893,7 @@ write_launcher_stub() {
     local root="$1"
 
     cat > "$root/usr/bin/$PACKAGE_NAME" <<SCRIPT
-#!/bin/bash
+#!/usr/bin/env bash
 exec /opt/$PACKAGE_NAME/start.sh "\$@"
 SCRIPT
     chmod 0755 "$root/usr/bin/$PACKAGE_NAME"
