@@ -44,9 +44,15 @@ pub fn preflight(
     allow_install_missing: bool,
 ) -> Result<PreflightOutcome> {
     let requested_path = explicit_cli_path.as_deref();
-    let cli_path = match resolve_cli_path(requested_path) {
-        Some(path) => path,
-        None if allow_install_missing => install_missing_cli(state, paths, requested_path)?,
+    let (cli_path, installed_missing_cli) = match resolve_cli_path(requested_path) {
+        Some(path) => (path, false),
+        None if allow_install_missing => match install_missing_cli(state, paths, requested_path) {
+            Ok(path) => (path, true),
+            Err(error) => {
+                persist_cli_failure(state, paths, &error)?;
+                return Err(error);
+            }
+        },
         None => anyhow::bail!("Codex CLI not found in PATH or known install locations"),
     };
     let path_env = command_path_env();
@@ -57,12 +63,15 @@ pub fn preflight(
         Err(probe_error) => {
             let Some(missing_dependency) = missing_platform_optional_dependency(&probe_error)
             else {
+                persist_new_cli_probe_failure(installed_missing_cli, state, paths, &probe_error)?;
                 return Err(probe_error);
             };
             if managed_cli.is_some() {
+                persist_new_cli_probe_failure(installed_missing_cli, state, paths, &probe_error)?;
                 return Err(probe_error);
             }
             let Some(npm_install) = npm_cli_install(&cli_path, &missing_dependency) else {
+                persist_new_cli_probe_failure(installed_missing_cli, state, paths, &probe_error)?;
                 return Err(probe_error);
             };
 
@@ -447,6 +456,18 @@ fn persist_cli_failure(
     persist_state(paths, state)
 }
 
+fn persist_new_cli_probe_failure(
+    installed_missing_cli: bool,
+    state: &mut PersistedState,
+    paths: &RuntimePaths,
+    error: &anyhow::Error,
+) -> Result<()> {
+    if installed_missing_cli {
+        persist_cli_failure(state, paths, error)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 fn persist_if_changed(
     paths: &RuntimePaths,
@@ -655,7 +676,7 @@ fn refresh_cli_status_from_latest(
                 None => {
                     state.cli_status = CliStatus::Unknown;
                     state.cli_error_message = Some(format!(
-                        "This Codex CLI is managed by pacman package '{package_name}', but Codex Desktop could not determine the latest version currently available through pacman. This install will not be auto-updated through npm; check pacman directly."
+                        "This Codex CLI is managed by pacman package '{package_name}', but ChatGPT Desktop could not determine the latest version currently available through pacman. This install will not be auto-updated through npm; check pacman directly."
                     ));
                 }
             }
@@ -674,7 +695,7 @@ fn refresh_cli_status_from_latest(
                 Some(official_latest) => {
                     state.cli_status = CliStatus::Unknown;
                     state.cli_error_message = Some(format!(
-                        "Codex Desktop resolved Codex CLI to {}, but pacman -Qo {} could not determine which package owns it. The official {CLI_PACKAGE_NAME} upstream is {official_latest}; this install will not be auto-updated through npm, so inspect the CLI source and decide how to update it.",
+                        "ChatGPT Desktop resolved Codex CLI to {}, but pacman -Qo {} could not determine which package owns it. The official {CLI_PACKAGE_NAME} upstream is {official_latest}; this install will not be auto-updated through npm, so inspect the CLI source and decide how to update it.",
                         cli_path.display(),
                         query_path.display()
                     ));
@@ -682,7 +703,7 @@ fn refresh_cli_status_from_latest(
                 None => {
                     state.cli_status = CliStatus::Unknown;
                     state.cli_error_message = Some(format!(
-                        "Codex Desktop resolved Codex CLI to {}, but pacman -Qo {} could not determine which package owns it, and the official {CLI_PACKAGE_NAME} version could not be checked. This install will not be auto-updated through npm; inspect the CLI source and decide how to update it.",
+                        "ChatGPT Desktop resolved Codex CLI to {}, but pacman -Qo {} could not determine which package owns it, and the official {CLI_PACKAGE_NAME} version could not be checked. This install will not be auto-updated through npm; inspect the CLI source and decide how to update it.",
                         cli_path.display(),
                         query_path.display()
                     ));
@@ -1612,18 +1633,16 @@ mod tests {
     }
 
     fn link_test_system_tool(tool_bin: &Path, name: &str) -> Result<()> {
-        let target = [
-            PathBuf::from("/bin").join(name),
-            PathBuf::from("/usr/bin").join(name),
-        ]
-        .into_iter()
-        .find(|candidate| candidate.is_file())
-        .ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("system tool {name} not found"),
-            )
-        })?;
+        let target = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+            .filter(|directory| directory.is_absolute())
+            .map(|directory| directory.join(name))
+            .find(|candidate| is_executable(candidate))
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("system tool {name} not found"),
+                )
+            })?;
         let link_path = tool_bin.join(name);
         if !link_path.exists() {
             std::os::unix::fs::symlink(target, link_path)?;
@@ -2805,6 +2824,73 @@ exit 1
             .cli_error_message
             .as_deref()
             .is_some_and(|message| message.contains("repair failed")));
+        let persisted = PersistedState::load_or_default(&paths.state_file, true)?;
+        assert_eq!(persisted.cli_status, CliStatus::Failed);
+        assert_eq!(persisted.cli_error_message, state.cli_error_message);
+        Ok(())
+    }
+
+    #[test]
+    fn failed_missing_cli_install_persists_failed_status() -> Result<()> {
+        let _env_guard = env_lock();
+        let temp = tempdir()?;
+        let paths = test_runtime_paths(temp.path());
+        paths.ensure_dirs()?;
+
+        let bin_dir = temp.path().join("bin");
+        fs::create_dir_all(&bin_dir)?;
+        write_executable_script(
+            &bin_dir.join("npm"),
+            "#!/bin/sh\necho 'registry unavailable' >&2\nexit 42\n",
+        )?;
+
+        let _restore_env = configure_cli_test_env(temp.path(), [bin_dir])?;
+
+        let mut state = PersistedState::new(true);
+        let error = preflight(&mut state, &paths, None, true)
+            .expect_err("a failed missing CLI install should bubble up");
+
+        assert!(format!("{error:#}").contains("registry unavailable"));
+        assert_eq!(state.cli_status, CliStatus::Failed);
+        assert!(state
+            .cli_error_message
+            .as_deref()
+            .is_some_and(|message| message.contains("registry unavailable")));
+        let persisted = PersistedState::load_or_default(&paths.state_file, true)?;
+        assert_eq!(persisted.cli_status, CliStatus::Failed);
+        assert_eq!(persisted.cli_error_message, state.cli_error_message);
+        Ok(())
+    }
+
+    #[test]
+    fn failed_new_cli_version_probe_persists_failed_status() -> Result<()> {
+        let _env_guard = env_lock();
+        let _restore_fake_cli_path = EnvRestoreGuard::capture(&["FAKE_CODEX_PATH"]);
+        let temp = tempdir()?;
+        let paths = test_runtime_paths(temp.path());
+        paths.ensure_dirs()?;
+
+        let bin_dir = temp.path().join("bin");
+        fs::create_dir_all(&bin_dir)?;
+        let codex_path = bin_dir.join("codex");
+        write_executable_script(
+            &bin_dir.join("npm"),
+            "#!/bin/sh\nif [ \"$1\" = \"view\" ]; then\n  echo '0.42.1'\n  exit 0\nfi\nif [ \"$1\" = \"install\" ]; then\n  printf '%s\\n' '#!/bin/sh' \"echo 'version probe failed' >&2\" 'exit 43' > \"$FAKE_CODEX_PATH\"\n  /bin/chmod +x \"$FAKE_CODEX_PATH\"\n  exit 0\nfi\nexit 1\n",
+        )?;
+
+        let _restore_env = configure_cli_test_env(temp.path(), [bin_dir])?;
+        std::env::set_var("FAKE_CODEX_PATH", &codex_path);
+
+        let mut state = PersistedState::new(true);
+        let error = preflight(&mut state, &paths, None, true)
+            .expect_err("a failed version probe after installation should bubble up");
+
+        assert!(format!("{error:#}").contains("version probe failed"));
+        assert_eq!(state.cli_status, CliStatus::Failed);
+        assert!(state
+            .cli_error_message
+            .as_deref()
+            .is_some_and(|message| message.contains("version probe failed")));
         let persisted = PersistedState::load_or_default(&paths.state_file, true)?;
         assert_eq!(persisted.cli_status, CliStatus::Failed);
         assert_eq!(persisted.cli_error_message, state.cli_error_message);

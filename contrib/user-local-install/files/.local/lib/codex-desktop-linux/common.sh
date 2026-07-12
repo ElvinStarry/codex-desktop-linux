@@ -470,6 +470,12 @@ header_value() {
 extract_icon() {
     ensure_layout
     local dmg_file source_icon tmp_dir
+    source_icon="$APP_DIR/.codex-linux/codex-desktop.png"
+    if [ -f "$source_icon" ]; then
+        cp "$source_icon" "$ICON_PATH"
+        return 0
+    fi
+
     source_icon="${SOURCE_REPO_DIR:-$REPO_DIR_DEFAULT}/assets/codex-linux.png"
     if [ -f "$source_icon" ]; then
         cp "$source_icon" "$ICON_PATH"
@@ -480,7 +486,7 @@ extract_icon() {
     tmp_dir="$(mktemp -d)"
     trap 'rm -rf "$tmp_dir"' RETURN
 
-    7z e -y "$dmg_file" "Codex Installer/Codex.app/Contents/Resources/electron.icns" "-o${tmp_dir}" >/dev/null
+    7z e -y "$dmg_file" "ChatGPT Installer/ChatGPT.app/Contents/Resources/electron.icns" "-o${tmp_dir}" >/dev/null
     python3 - "$tmp_dir/electron.icns" "$ICON_PATH" <<'PY'
 from PIL import Image
 import sys

@@ -1,13 +1,13 @@
 # Auto-Update Manager
 
-Default native packages install `codex-update-manager` for manual update
-checks. The companion `systemd --user` service is installed but disabled by
-default.
+Default native packages install `codex-update-manager`, but automatic
+background updates are disabled by default. Run `codex-update-manager
+check-now` or use the in-app Check for Updates action when you want to update.
 
 It:
 
-- checks upstream `Codex.dmg` when the user runs `check-now`, uses the in-app
-  Check for Updates action, or explicitly enables and starts the user service
+- checks upstream `Codex.dmg` on daemon startup, every 6 hours, and in the
+  background on app launch when stale
 - rebuilds a local native package with `/opt/codex-desktop/update-builder`
 - waits for Electron to exit before installing a ready update
 - runs unprivileged; the final package install uses `pkexec` when a graphical
@@ -103,7 +103,7 @@ that look like this wrapper repository or packaged update-builder.
 ## Rollback
 
 If a rebuilt update installs but the previous retained package was better,
-close Codex Desktop and run:
+close ChatGPT Desktop and run:
 
 ```bash
 codex-update-manager rollback
@@ -136,7 +136,37 @@ PACKAGE_WITH_UPDATER=0 make update-native
 ```
 
 `make update-native` runs `git pull --ff-only`, regenerates `codex-app/` from a
-fresh upstream `Codex.dmg`, builds the native package, and installs it.
+fresh upstream `Codex.dmg`, builds the native package, and installs it. The
+rebuild uses the shared [upstream DMG acceptance profile](upstream-dmg-acceptance.md);
+rejected and inconclusive candidates never replace the working generated app
+or advance to package installation.
+The rebuild evaluates only the Linux Features selected in the user's saved
+configuration. Drift in any selected feature rejects the candidate; disable
+that feature and retry if receiving the upstream update is more important than
+retaining it.
+
+Automated user-local rebuilds always force
+`CODEX_INSTALL_ALLOW_RUNNING=0` and `CODEX_ACCEPTANCE_OVERRIDE=0`, even if the
+service or invoking shell inherited developer overrides. The in-app update path
+continues through its after-exit hook and relaunches after a successful update.
+A manual command or timer may build while the app is open, but final promotion
+is refused and the working app remains unchanged until Electron exits. Failed
+promotion candidates are disposable by default; opt in to diagnostic retention
+with `CODEX_KEEP_REJECTED_CANDIDATE=1`.
+
+Transactional user-local installs retain one previous-app directory for manual
+recovery. Each successful promotion replaces that retained backup with the
+version that was working immediately beforehand; older exact managed backup
+directories are pruned under the promotion lock.
+
+Updater downloads are streamed to unique temporary files and published as
+`Codex-<sha256>.dmg` only after the file and parent directory are synced. The
+content-addressed path stays immutable while daemon and wrapper rebuild flows
+consume it under a shared lease, so cleanup and concurrent rebuilds cannot
+truncate or remove another build's DMG input. Startup and post-build cleanup
+retain the DMG referenced by updater state, remove older managed hash files,
+and delete strictly named download temporaries left by a killed process.
+Unrelated files and symlinks in `downloads/` are never removed.
 
 ## Service Controls
 
@@ -146,19 +176,19 @@ make service-status
 codex-update-manager status --json
 ```
 
-`make service-enable` is an explicit opt-in for installed packages, not
-repo-only generated apps.
+`make service-enable` is meant for installed packages, not repo-only generated
+apps.
 
-Automatic package rebuilds are disabled by default. To keep them disabled or
-turn off a previously enabled service:
+To temporarily pause automatic package rebuilds and installs while keeping Codex
+Desktop usable, disable the user service:
 
 ```bash
 systemctl --user disable --now codex-update-manager.service
 ```
 
-Launching Codex Desktop or upgrading the package will stop and disable the
-updater service. Re-enable updater behavior explicitly when you want automatic
-checks again:
+Launching ChatGPT Desktop and upgrading the package will stop and disable the
+updater service. Re-enable updater behavior explicitly only when you want
+automatic checks again:
 
 ```bash
 systemctl --user enable --now codex-update-manager.service
